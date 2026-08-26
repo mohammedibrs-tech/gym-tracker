@@ -326,6 +326,50 @@ textarea{resize:vertical; min-height:70px;}
 .set-check-btn.checked{background:var(--teal); border-color:var(--teal); color:#fff;}
 .set-row.warmup .set-row-num{color:var(--amber);}
 
+/* واجهة تسجيل سريعة بأزرار +/- كبيرة بدل الكتابة اليدوية */
+.sets-list{display:flex; flex-direction:column; gap:8px; margin-bottom:10px;}
+.set-row-card{
+  display:flex; align-items:center; gap:8px;
+  background:var(--line-soft); border-radius:var(--radius-sm); padding:8px;
+}
+.set-row-card.checked{background:var(--teal-light);}
+.set-row-card.warmup{background:var(--amber-bg);}
+.set-row-label{font-size:12px; font-weight:700; color:var(--ink-faint); width:38px; flex-shrink:0; text-align:center;}
+.set-stepper-group{display:flex; gap:6px; flex:1;}
+.stepper{
+  display:flex; align-items:center; background:var(--surface); border:1px solid var(--line);
+  border-radius:8px; flex:1; overflow:hidden;
+}
+.stepper-btn{
+  width:36px; height:40px; border:none; background:var(--surface); color:var(--teal-dark);
+  font-size:18px; font-weight:700; flex-shrink:0;
+}
+.stepper-btn:active{background:var(--teal-light);}
+.stepper-value{
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:2px 0; min-width:0;
+}
+.stepper-value input{
+  width:100%; border:none; text-align:center; font-size:16px; font-weight:700;
+  background:transparent; padding:0; -moz-appearance:textfield;
+}
+.stepper-value input::-webkit-outer-spin-button,.stepper-value input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0;}
+.stepper-unit{font-size:9.5px; color:var(--ink-faint); margin-top:-2px;}
+.set-check-btn-lg{
+  width:44px; height:44px; border-radius:10px; border:1.5px solid var(--line);
+  background:var(--surface); color:var(--ink-faint); font-size:18px; font-weight:700;
+  flex-shrink:0; display:flex; align-items:center; justify-content:center;
+}
+.set-check-btn-lg.checked{background:var(--teal); border-color:var(--teal); color:#fff;}
+.set-extra-toggle{
+  font-size:11px; color:var(--ink-faint); text-align:center; padding:2px 0 6px;
+  cursor:pointer;
+}
+.extra-caret{font-size:9px;}
+.set-extra-fields{display:flex; gap:8px; margin-bottom:8px;}
+.set-extra-fields .input-group{flex:1; margin-bottom:0;}
+.set-extra-fields label{font-size:11px;}
+
 .rpe-rir-row{display:flex; gap:8px; margin-bottom:10px;}
 .rpe-rir-row .input-group{flex:1; margin-bottom:0;}
 .rpe-rir-row label{font-size:11.5px;}
@@ -1320,18 +1364,28 @@ async function loadExerciseSuggestion(exIndex){
     item.suggestion = calculateProgressiveSuggestion(perf.sets, item.target_rep_range);
   }
 
-  // جهّز صفوف المجموعات الفارغة بعدد target_sets
+  // نحسب قيمة افتراضية معقولة للتكرارات من منتصف النطاق المستهدف (مثلاً 8-12 -> 10)
+  const defaultReps = getDefaultRepsFromRange(item.target_rep_range);
+
+  // جهّز صفوف المجموعات الفارغة بعدد target_sets مع قيم افتراضية جاهزة للتعديل السريع
   if(item.sets.length === 0){
     const count = item.target_sets || 3;
     for(let i=0;i<count;i++){
       item.sets.push({
         set_number: i+1,
         weight_kg: item.suggestion ? item.suggestion.weight_kg : null,
-        reps: null, rpe: null, rir: null, is_warmup: false, notes: '', checked: false, db_id: null,
+        reps: defaultReps, rpe: null, rir: null, is_warmup: false, notes: '', checked: false, db_id: null,
       });
     }
   }
   saveActiveSessionLocally();
+}
+
+function getDefaultRepsFromRange(repRangeStr){
+  const match = (repRangeStr || '8-12').match(/(\d+)\s*-\s*(\d+)/);
+  if(!match) return 10;
+  const lo = parseInt(match[1]), hi = parseInt(match[2]);
+  return Math.round((lo + hi) / 2);
 }
 
 function getWorkoutElapsedSeconds(){
@@ -1391,18 +1445,36 @@ function renderExerciseCardHTML(item, idx){
     : '';
 
   const setsRows = item.sets.map((s, sidx) => `
-    <tr class="set-row ${s.is_warmup?'warmup':''}">
-      <td class="set-row-num">${s.is_warmup ? 'إحماء' : s.set_number}</td>
-      <td><input type="number" step="0.5" inputmode="decimal" placeholder="lb" value="${s.weight_kg!=null?kgToLb(s.weight_kg):''}"
-            onchange="updateSetField(${idx},${sidx},'weight_lb',this.value)"></td>
-      <td><input type="number" inputmode="numeric" placeholder="عدد" value="${s.reps ?? ''}"
-            onchange="updateSetField(${idx},${sidx},'reps',this.value)"></td>
-      <td><input type="number" step="0.5" min="1" max="10" placeholder="—" value="${s.rpe ?? ''}"
-            onchange="updateSetField(${idx},${sidx},'rpe',this.value)"></td>
-      <td><input type="number" min="0" max="5" placeholder="—" value="${s.rir ?? ''}"
-            onchange="updateSetField(${idx},${sidx},'rir',this.value)"></td>
-      <td><button class="set-check-btn ${s.checked?'checked':''}" onclick="toggleSetChecked(${idx},${sidx})">${s.checked?'✓':''}</button></td>
-    </tr>`).join('');
+    <div class="set-row-card ${s.is_warmup?'warmup':''} ${s.checked?'checked':''}">
+      <div class="set-row-label">${s.is_warmup ? 'إحماء' : 'Set ' + s.set_number}</div>
+      <div class="set-stepper-group">
+        <div class="stepper">
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight_lb',-5)">－</button>
+          <div class="stepper-value">
+            <input type="number" step="0.5" inputmode="decimal" value="${s.weight_kg!=null?kgToLb(s.weight_kg):''}"
+              onchange="updateSetField(${idx},${sidx},'weight_lb',this.value)">
+            <span class="stepper-unit">lb</span>
+          </div>
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight_lb',5)">＋</button>
+        </div>
+        <div class="stepper">
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'reps',-1)">－</button>
+          <div class="stepper-value">
+            <input type="number" inputmode="numeric" value="${s.reps ?? ''}"
+              onchange="updateSetField(${idx},${sidx},'reps',this.value)">
+            <span class="stepper-unit">reps</span>
+          </div>
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'reps',1)">＋</button>
+        </div>
+      </div>
+      <button class="set-check-btn-lg ${s.checked?'checked':''}" onclick="toggleSetChecked(${idx},${sidx})">${s.checked?'✓':''}</button>
+    </div>
+    <div class="set-extra-toggle" onclick="toggleSetExtra(${idx},${sidx})">RPE${s.rpe!=null?': '+s.rpe:''} / RIR${s.rir!=null?': '+s.rir:''} <span class="extra-caret">${item._extraOpen===sidx?'▲':'▼'}</span></div>
+    <div class="set-extra-fields ${item._extraOpen===sidx?'':'hidden'}">
+      <div class="input-group"><label>RPE (1-10)</label><input type="number" step="0.5" min="1" max="10" value="${s.rpe ?? ''}" onchange="updateSetField(${idx},${sidx},'rpe',this.value)"></div>
+      <div class="input-group"><label>RIR (0-5)</label><input type="number" min="0" max="5" value="${s.rir ?? ''}" onchange="updateSetField(${idx},${sidx},'rir',this.value)"></div>
+    </div>
+  `).join('');
 
   return `
     <div class="exercise-card ${item.completed?'done':''}" id="ex-card-${idx}">
@@ -1415,19 +1487,33 @@ function renderExerciseCardHTML(item, idx){
       </div>
       ${lastPerfHtml}
       ${suggestionHtml}
-      <table class="set-table">
-        <colgroup>
-          <col class="col-num"><col><col><col><col><col class="col-check">
-        </colgroup>
-        <thead><tr><th></th><th>الوزن (lb)</th><th>تكرار</th><th>RPE</th><th>RIR</th><th></th></tr></thead>
-        <tbody>${setsRows}</tbody>
-      </table>
+      <div class="sets-list">${setsRows}</div>
       <button class="btn btn-secondary btn-sm" onclick="addWarmupSet(${idx})">+ مجموعة إحماء</button>
       <button class="btn btn-secondary btn-sm" onclick="addWorkingSet(${idx})">+ مجموعة عمل</button>
       <div class="input-group mt-12">
         <textarea placeholder="ملاحظات على هذا التمرين" onchange="updateExerciseNote(${idx}, this.value)">${escapeHtml(item.notes)}</textarea>
       </div>
     </div>`;
+}
+
+function toggleSetExtra(exIdx, setIdx){
+  const item = state.activeSession.exercises[exIdx];
+  item._extraOpen = item._extraOpen === setIdx ? null : setIdx;
+  renderExerciseCards(document.getElementById('live-exercises-list'));
+}
+
+/* تعديل سريع بضغطة واحدة على +/- بدل فتح لوحة المفاتيح */
+function stepSetField(exIdx, setIdx, field, delta){
+  const set = state.activeSession.exercises[exIdx].sets[setIdx];
+  if(field === 'weight_lb'){
+    const currentLb = set.weight_kg != null ? kgToLb(set.weight_kg) : 0;
+    const newLb = Math.max(0, currentLb + delta);
+    set.weight_kg = lbToKg(newLb);
+  }else if(field === 'reps'){
+    set.reps = Math.max(0, (set.reps || 0) + delta);
+  }
+  saveActiveSessionLocally();
+  renderExerciseCards(document.getElementById('live-exercises-list'));
 }
 
 function updateSetField(exIdx, setIdx, field, rawValue){
@@ -1459,7 +1545,11 @@ function addWarmupSet(exIdx){
 function addWorkingSet(exIdx){
   const item = state.activeSession.exercises[exIdx];
   const workingSets = item.sets.filter(s=>!s.is_warmup);
-  item.sets.push({ set_number: workingSets.length+1, weight_kg: item.suggestion?item.suggestion.weight_kg:null, reps:null, rpe:null, rir:null, is_warmup:false, notes:'', checked:false, db_id:null });
+  const lastSet = workingSets[workingSets.length-1];
+  // ننسخ قيم آخر مجموعة (وزن وتكرار) كنقطة بداية سريعة بدل الكتابة من الصفر
+  const carryWeight = lastSet && lastSet.weight_kg != null ? lastSet.weight_kg : (item.suggestion ? item.suggestion.weight_kg : null);
+  const carryReps = lastSet && lastSet.reps != null ? lastSet.reps : getDefaultRepsFromRange(item.target_rep_range);
+  item.sets.push({ set_number: workingSets.length+1, weight_kg: carryWeight, reps: carryReps, rpe:null, rir:null, is_warmup:false, notes:'', checked:false, db_id:null });
   saveActiveSessionLocally();
   renderExerciseCards(document.getElementById('live-exercises-list'));
 }
@@ -1599,12 +1689,22 @@ async function finishWorkoutSession(){
     stopRestTimer();
     if(state.workoutTimerIntervalId) clearInterval(state.workoutTimerIntervalId);
 
+    // تفاصيل كل تمرين للمشاركة (اسم + أفضل مجموعة + إجمالي حجم)
+    const exerciseBreakdown = session.exercises
+      .filter(e => e.sets.some(s=>s.checked && !s.is_warmup))
+      .map(e => {
+        const workingSets = e.sets.filter(s=>s.checked && !s.is_warmup && s.weight_kg && s.reps);
+        const maxSet = workingSets.reduce((max,s)=> (s.weight_kg>max.weight_kg?s:max), workingSets[0] || {weight_kg:0,reps:0});
+        return { name_ar: e.exercise.name_ar, name_en: e.exercise.name_en, setsCount: workingSets.length, topWeightLb: kgToLb(maxSet.weight_kg||0), topReps: maxSet.reps||0 };
+      });
+
     const summary = {
       dayNameAr: session.dayNameAr,
       durationSeconds, totalVolume: Math.round(totalVolume*100)/100,
       exerciseCount: session.exercises.filter(e=>e.sets.some(s=>s.checked)).length,
       setsCount: totalSetsCount,
       endedAt,
+      exerciseBreakdown,
     };
 
     state.activeSession = null;
@@ -1692,8 +1792,103 @@ function renderWorkoutSummary(summary){
     <div class="section-title">النوم والاستشفاء</div>
     <div class="card"><div class="text-sm">${sleepAdvice}</div></div>
 
-    <button class="btn btn-primary mt-20" onclick="navigateTo('dashboard')">الذهاب للرئيسية</button>
+    <button class="btn btn-secondary mt-20" onclick="shareWorkoutSummaryImage(${JSON.stringify(summary).replace(/"/g,'&quot;')})">مشاركة التمرين</button>
+    <button class="btn btn-primary mt-8" onclick="navigateTo('dashboard')">الذهاب للرئيسية</button>
   `;
+}
+
+/* ============================================================
+   بطاقة مشاركة التمرين (تُحوَّل لصورة عبر html2canvas لمشاركتها بسناب شات وغيره)
+   ============================================================ */
+function ensureHtml2Canvas(){
+  return new Promise((resolve, reject) => {
+    if(window.html2canvas){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('تعذر تحميل مكتبة إنشاء الصورة'));
+    document.head.appendChild(script);
+  });
+}
+
+async function shareWorkoutSummaryImage(summary){
+  try{
+    showToast('جاري تجهيز الصورة...', '');
+    await ensureHtml2Canvas();
+
+    const card = buildShareCardElement(summary);
+    document.body.appendChild(card);
+
+    const canvas = await window.html2canvas(card, { scale: 2, backgroundColor: '#FAFAF8' });
+    document.body.removeChild(card);
+
+    canvas.toBlob(async (blob) => {
+      const file = new File([blob], 'workout-summary.png', { type: 'image/png' });
+
+      if(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })){
+        try{
+          await navigator.share({ files: [file], title: 'تمريني اليوم' });
+          return;
+        }catch(e){
+          // المستخدم ألغى المشاركة أو فشلت — نكمل على التحميل العادي
+        }
+      }
+
+      // بديل: تنزيل الصورة مباشرة إذا مشاركة الملفات غير مدعومة بالمتصفح
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'workout-summary.png';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('تم حفظ الصورة — يمكنك مشاركتها الآن من معرض الصور', 'success');
+    }, 'image/png');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر إنشاء صورة المشاركة. حاول مرة أخرى.', 'error');
+  }
+}
+
+function buildShareCardElement(summary){
+  const card = document.createElement('div');
+  card.style.cssText = 'position:fixed; top:-9999px; left:-9999px; width:390px; font-family:' + getComputedStyle(document.body).fontFamily + ';';
+  card.innerHTML = `
+    <div style="background:linear-gradient(160deg, #2E9896 0%, #1C2422 100%); padding:28px 24px; color:#fff; direction:rtl;">
+      <div style="font-size:12px; opacity:0.85; font-weight:600; letter-spacing:0.03em;">تمرين مكتمل</div>
+      <div style="font-size:26px; font-weight:700; margin:8px 0 2px;">${escapeHtml(summary.dayNameAr)}</div>
+      <div style="font-size:12px; opacity:0.8; margin-bottom:20px;">${formatDateAr(summary.endedAt)}</div>
+
+      <div style="display:flex; gap:8px; margin-bottom:20px;">
+        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700;">${formatDuration(summary.durationSeconds)}</div>
+          <div style="font-size:10px; opacity:0.8; margin-top:2px;">المدة</div>
+        </div>
+        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700;">${summary.setsCount}</div>
+          <div style="font-size:10px; opacity:0.8; margin-top:2px;">مجموعة</div>
+        </div>
+        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700;">${kgToLb(summary.totalVolume)}</div>
+          <div style="font-size:10px; opacity:0.8; margin-top:2px;">lb حجم</div>
+        </div>
+      </div>
+
+      <div style="background:#fff; border-radius:14px; padding:16px; color:#1C2422;">
+        <div style="font-size:11px; font-weight:700; color:#8A9694; text-transform:uppercase; margin-bottom:10px;">تفاصيل التمرين</div>
+        ${(summary.exerciseBreakdown||[]).map(e => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #EEEEE9;">
+            <div>
+              <div style="font-size:13.5px; font-weight:700;">${escapeHtml(e.name_ar)}</div>
+              <div style="font-size:10.5px; color:#8A9694;">${e.setsCount} مجموعة</div>
+            </div>
+            <div style="font-size:14px; font-weight:700; color:#227876;">${e.topWeightLb} lb × ${e.topReps}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div style="text-align:center; margin-top:20px; font-size:11px; opacity:0.7;">متابعة التمارين</div>
+    </div>
+  `;
+  return card;
 }
 
 /* ============================================================
@@ -1711,6 +1906,18 @@ pageRenderers.today = function(main){
     return;
   }
 
+  // الخطوة 1: كيف تشعر اليوم — أول شي يظهر قبل أي شي ثاني
+  renderTodayFeelingStep(main, nextDay);
+};
+
+function renderTodayFeelingStep(main, nextDay){
+  main.innerHTML = `<div id="feeling-check-area"></div>`;
+  renderFeelingScreen(document.getElementById('feeling-check-area'), (feelingKey) => {
+    renderTodayPlanStep(main, nextDay, feelingKey);
+  });
+}
+
+function renderTodayPlanStep(main, nextDay, feelingKey){
   main.innerHTML = `
     <div class="hero-card">
       <div class="eyebrow">تمرين اليوم</div>
@@ -1725,17 +1932,15 @@ pageRenderers.today = function(main){
           <span class="badge badge-gray">${wde.target_sets} × ${escapeHtml(wde.target_rep_range)}</span>
         </div>`).join('')}
     </div>
-    <div id="feeling-check-area" class="mt-20"></div>
-    <button class="btn btn-ghost mt-16" onclick="openEmergencyModal()">حدث ظرف اليوم</button>
+    <button class="btn btn-primary mt-20" id="start-workout-btn">ابدأ التمرين</button>
+    <button class="btn btn-ghost mt-8" onclick="renderTodayFeelingStep(document.getElementById('main-content'), getNextWorkoutDay())">→ رجوع</button>
+    <button class="btn btn-ghost mt-8" onclick="openEmergencyModal()">حدث ظرف اليوم</button>
   `;
 
-  renderFeelingScreen(document.getElementById('feeling-check-area'), async (feelingKey) => {
-    if(feelingKey === 'pain'){
-      // نسمح بالمتابعة لكن دون إخفاء التحذير، ونمرر الحالة كما هي
-    }
+  document.getElementById('start-workout-btn').onclick = async () => {
     await startWorkoutSession(nextDay, feelingKey);
-  });
-};
+  };
+}
 
 /* ============================================================
    الجزء 12: نافذة "حدث ظرف اليوم" (Emergency Reschedule)
@@ -2188,8 +2393,10 @@ async function saveBodyweight(){
   };
 
   try{
-    await sb.from('body_measurements').insert(payload);
-    await sb.from('profiles').update({ weight_kg: kg }).eq('id', state.user.id);
+    const { error: e1 } = await sb.from('body_measurements').insert(payload);
+    if(e1) throw e1;
+    const { error: e2 } = await sb.from('profiles').update({ weight_kg: kg }).eq('id', state.user.id);
+    if(e2) throw e2;
     state.profile.weight_kg = kg;
     showToast('تم حفظ الوزن بنجاح', 'success');
     navigateTo('progress');
@@ -2318,6 +2525,12 @@ pageRenderers.settings = function(main){
     </div>
 
     <div class="card">
+      <div class="section-title" style="margin-top:0">برنامج التمارين</div>
+      <div class="text-sm text-faint mb-12">رتّب أيام برنامجك، أضف أو احذف أيامًا، واختر تمارين كل يوم بنفسك.</div>
+      <button class="btn btn-secondary" onclick="navigateTo('program-editor')">تعديل برنامجي</button>
+    </div>
+
+    <div class="card">
       <div class="section-title" style="margin-top:0">تصدير البيانات</div>
       <button class="btn btn-secondary" onclick="exportHistoryCSV()">تصدير سجل التمارين (CSV)</button>
     </div>
@@ -2341,13 +2554,14 @@ async function saveProfileSettings(){
   };
 
   try{
-    await sb.from('profiles').update(payload).eq('id', state.user.id);
+    const { error } = await sb.from('profiles').update(payload).eq('id', state.user.id);
+    if(error) throw error;
     state.profile = { ...state.profile, ...payload };
     document.getElementById('header-app-name').textContent = `تمارين ${payload.display_name}`;
     showToast('تم حفظ البيانات', 'success');
   }catch(err){
     console.error(err);
-    showToast('تعذر الحفظ. حاول مرة أخرى.', 'error');
+    showToast('تعذر الحفظ: ' + (err.message || 'خطأ غير معروف'), 'error');
   }
 }
 
@@ -2357,12 +2571,13 @@ async function saveRestSettings(){
     rest_time_isolation_seconds: parseInt(document.getElementById('set-rest-isolation').value) || 90,
   };
   try{
-    await sb.from('user_settings').update(payload).eq('user_id', state.user.id);
+    const { error } = await sb.from('user_settings').update(payload).eq('user_id', state.user.id);
+    if(error) throw error;
     state.settings = { ...state.settings, ...payload };
     showToast('تم حفظ إعدادات الراحة', 'success');
   }catch(err){
     console.error(err);
-    showToast('تعذر الحفظ. حاول مرة أخرى.', 'error');
+    showToast('تعذر الحفظ: ' + (err.message || 'خطأ غير معروف'), 'error');
   }
 }
 
@@ -2489,9 +2704,11 @@ async function saveExerciseForm(existingId){
 
   try{
     if(existingId){
-      await sb.from('exercises').update(payload).eq('id', existingId);
+      const { error } = await sb.from('exercises').update(payload).eq('id', existingId);
+      if(error) throw error;
     }else{
-      await sb.from('exercises').insert(payload);
+      const { error } = await sb.from('exercises').insert(payload);
+      if(error) throw error;
     }
     const { data: exercises } = await sb.from('exercises').select('*').or(`user_id.is.null,user_id.eq.${state.user.id}`).order('sort_order');
     state.exerciseCache = exercises || [];
@@ -2576,6 +2793,270 @@ async function addExerciseToActiveSession(exerciseId){
   saveActiveSessionLocally();
   renderExerciseCards(document.getElementById('live-exercises-list'));
   showToast('تمت إضافة التمرين', 'success');
+}
+
+/* ============================================================
+   الجزء 21: تعديل برنامج التمارين (ترتيب مرن مخصص بالكامل)
+   ============================================================ */
+pageRenderers['program-editor'] = function(main){
+  const days = [...state.workoutDays].sort((a,b)=>a.day_order-b.day_order);
+
+  main.innerHTML = `
+    <button class="btn btn-ghost" onclick="navigateTo('settings')">→ رجوع للإعدادات</button>
+    <div class="section-title">ترتيب برنامجك</div>
+    <div class="text-sm text-faint mb-12">هذا هو تسلسل تمارينك — يتبعه التطبيق بالدور بغض النظر عن اسم اليوم في التقويم. رتّبه أو عدّله كما تحب.</div>
+    <div id="program-days-list"></div>
+    <button class="btn btn-primary mt-16" onclick="openAddProgramDayModal()">+ إضافة يوم جديد</button>
+  `;
+  renderProgramDaysList();
+};
+
+function renderProgramDaysList(){
+  const container = document.getElementById('program-days-list');
+  const days = [...state.workoutDays].sort((a,b)=>a.day_order-b.day_order);
+
+  if(days.length === 0){
+    container.innerHTML = `<div class="empty-state"><div class="empty-sub">لا يوجد أي يوم بعد — أضف أول يوم لبرنامجك</div></div>`;
+    return;
+  }
+
+  container.innerHTML = days.map((d, idx) => `
+    <div class="card">
+      <div class="list-row">
+        <div>
+          <div class="title">${escapeHtml(d.name_ar)}</div>
+          <div class="sub">${escapeHtml(d.name_en)} — ${(d.workout_day_exercises||[]).length} تمرين</div>
+        </div>
+        <div class="flex gap-8">
+          <button class="icon-btn-sm" onclick="moveProgramDay('${d.id}', -1)" ${idx===0?'disabled':''}>↑</button>
+          <button class="icon-btn-sm" onclick="moveProgramDay('${d.id}', 1)" ${idx===days.length-1?'disabled':''}>↓</button>
+        </div>
+      </div>
+      <div class="flex gap-8 mt-8">
+        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="openDayExercisesEditor('${d.id}')">تعديل التمارين</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProgramDay('${d.id}')">حذف اليوم</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function moveProgramDay(dayId, direction){
+  const days = [...state.workoutDays].sort((a,b)=>a.day_order-b.day_order);
+  const idx = days.findIndex(d=>d.id===dayId);
+  const swapIdx = idx + direction;
+  if(swapIdx < 0 || swapIdx >= days.length) return;
+
+  const a = days[idx], b = days[swapIdx];
+  const aOrder = a.day_order, bOrder = b.day_order;
+
+  try{
+    await Promise.all([
+      sb.from('workout_days').update({ day_order: bOrder }).eq('id', a.id),
+      sb.from('workout_days').update({ day_order: aOrder }).eq('id', b.id),
+    ]);
+    a.day_order = bOrder; b.day_order = aOrder;
+    renderProgramDaysList();
+  }catch(err){
+    console.error(err);
+    showToast('تعذر تغيير الترتيب. حاول مرة أخرى.', 'error');
+  }
+}
+
+function openAddProgramDayModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'add-day-modal';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <button class="modal-close" onclick="closeModal('add-day-modal')">✕</button>
+      <div class="modal-title">إضافة يوم جديد لبرنامجك</div>
+      <div class="input-group"><label>اسم اليوم بالعربي</label><input type="text" id="new-day-name-ar" placeholder="مثال: صدر وترايسبس"></div>
+      <div class="input-group"><label>اسم اليوم بالإنجليزي</label><input type="text" id="new-day-name-en" placeholder="Example: Chest and Triceps"></div>
+      <button class="btn btn-primary" onclick="submitAddProgramDay()">إضافة</button>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function submitAddProgramDay(){
+  const nameAr = document.getElementById('new-day-name-ar').value.trim();
+  const nameEn = document.getElementById('new-day-name-en').value.trim();
+  if(!nameAr){ showToast('اكتب اسم اليوم أولًا', 'error'); return; }
+
+  const maxOrder = state.workoutDays.length > 0 ? Math.max(...state.workoutDays.map(d=>d.day_order)) : 0;
+
+  try{
+    const { data, error } = await sb.from('workout_days').insert({
+      user_id: state.user.id, day_order: maxOrder + 1, name_ar: nameAr, name_en: nameEn || nameAr, muscle_groups: []
+    }).select().single();
+    if(error) throw error;
+
+    data.workout_day_exercises = [];
+    state.workoutDays.push(data);
+    closeModal('add-day-modal');
+    renderProgramDaysList();
+    showToast('تمت إضافة اليوم', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الإضافة: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+async function deleteProgramDay(dayId){
+  if(!confirm('هل تريد حذف هذا اليوم من برنامجك؟ سيُحذف مع كل تمارينه المرتبطة به.')) return;
+
+  try{
+    const { error } = await sb.from('workout_days').delete().eq('id', dayId);
+    if(error) throw error;
+
+    state.workoutDays = state.workoutDays.filter(d => d.id !== dayId);
+
+    // إذا كان هذا اليوم هو "القادم" بالجدولة، ننقلها لأول يوم متبقي لتفادي مرجع معلّق
+    if(state.scheduleState?.next_workout_day_id === dayId){
+      const fallback = state.workoutDays.sort((a,b)=>a.day_order-b.day_order)[0];
+      if(fallback){
+        await sb.from('schedule_state').update({ next_workout_day_id: fallback.id }).eq('user_id', state.user.id);
+        state.scheduleState.next_workout_day_id = fallback.id;
+      }
+    }
+
+    renderProgramDaysList();
+    showToast('تم حذف اليوم', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الحذف: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+/* ============================================================
+   محرر تمارين يوم معيّن — مع خياري المصدر: مقترحة / تماريني الخاصة
+   ============================================================ */
+let currentEditingDayId = null;
+
+function openDayExercisesEditor(dayId){
+  currentEditingDayId = dayId;
+  const day = state.workoutDays.find(d => d.id === dayId);
+  if(!day) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'day-exercises-modal';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <button class="modal-close" onclick="closeModal('day-exercises-modal')">✕</button>
+      <div class="modal-title">تمارين: ${escapeHtml(day.name_ar)}</div>
+      <div id="day-exercises-current"></div>
+      <div class="divider"></div>
+      <div class="section-title" style="margin-top:0">إضافة تمرين لهذا اليوم</div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-src="suggested" onclick="switchExercisePickerSource('suggested')">تمارين مقترحة</button>
+        <button class="tab-btn" data-src="mine" onclick="switchExercisePickerSource('mine')">تماريني الخاصة</button>
+      </div>
+      <div class="search-box"><input type="text" id="day-ex-search" placeholder="ابحث..." oninput="filterDayExercisePicker(this.value)"></div>
+      <div id="day-exercise-picker-list"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  renderDayCurrentExercises();
+  switchExercisePickerSource('suggested');
+}
+
+function renderDayCurrentExercises(){
+  const container = document.getElementById('day-exercises-current');
+  const day = state.workoutDays.find(d => d.id === currentEditingDayId);
+  const list = (day.workout_day_exercises || []).sort((a,b)=>a.sort_order-b.sort_order);
+
+  if(list.length === 0){
+    container.innerHTML = `<div class="empty-state"><div class="empty-sub">لا توجد تمارين مضافة بعد لهذا اليوم</div></div>`;
+    return;
+  }
+
+  container.innerHTML = list.map(wde => `
+    <div class="lib-row">
+      <div class="lr-info">
+        <div class="lr-name">${escapeHtml(wde.exercises.name_ar)}</div>
+        <div class="lr-meta">${escapeHtml(wde.exercises.name_en)} — ${wde.target_sets} × ${escapeHtml(wde.target_rep_range)}</div>
+      </div>
+      <button class="icon-btn-sm" onclick="removeExerciseFromDay('${wde.id}')">✕</button>
+    </div>
+  `).join('');
+}
+
+let exercisePickerSource = 'suggested';
+function switchExercisePickerSource(source){
+  exercisePickerSource = source;
+  document.querySelectorAll('#day-exercises-modal .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.src===source));
+  filterDayExercisePicker(document.getElementById('day-ex-search')?.value || '');
+}
+
+function filterDayExercisePicker(query){
+  const q = query.trim().toLowerCase();
+  const pool = exercisePickerSource === 'suggested'
+    ? state.exerciseCache.filter(e => e.is_default)
+    : state.exerciseCache.filter(e => e.user_id === state.user.id);
+
+  const filtered = !q ? pool : pool.filter(e =>
+    e.name_ar.toLowerCase().includes(q) || e.name_en.toLowerCase().includes(q));
+
+  const container = document.getElementById('day-exercise-picker-list');
+  if(filtered.length === 0){
+    container.innerHTML = `<div class="empty-state"><div class="empty-sub">${exercisePickerSource==='mine' ? 'ما عندك تمارين خاصة بعد — أضفها من مكتبة التمارين بالإعدادات' : 'لا توجد نتائج'}</div></div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(e => `
+    <div class="lib-row" style="cursor:pointer" onclick="addExerciseToDay('${e.id}')">
+      <div class="lr-info">
+        <div class="lr-name">${escapeHtml(e.name_ar)}</div>
+        <div class="lr-meta">${escapeHtml(e.name_en)}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function addExerciseToDay(exerciseId){
+  const day = state.workoutDays.find(d => d.id === currentEditingDayId);
+  const exercise = state.exerciseCache.find(e => e.id === exerciseId);
+  if(!day || !exercise) return;
+
+  const currentList = day.workout_day_exercises || [];
+  if(currentList.some(wde => wde.exercise_id === exerciseId)){
+    showToast('هذا التمرين مضاف بالفعل لهذا اليوم', 'error');
+    return;
+  }
+
+  try{
+    const { data, error } = await sb.from('workout_day_exercises').insert({
+      workout_day_id: day.id, exercise_id: exerciseId,
+      sort_order: currentList.length, target_sets: exercise.suggested_sets || 3,
+      target_rep_range: exercise.suggested_rep_range || '8-12',
+    }).select().single();
+    if(error) throw error;
+
+    data.exercises = exercise;
+    day.workout_day_exercises = [...currentList, data];
+    renderDayCurrentExercises();
+    showToast('تمت الإضافة', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الإضافة: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+async function removeExerciseFromDay(workoutDayExerciseId){
+  const day = state.workoutDays.find(d => d.id === currentEditingDayId);
+  if(!day) return;
+
+  try{
+    const { error } = await sb.from('workout_day_exercises').delete().eq('id', workoutDayExerciseId);
+    if(error) throw error;
+
+    day.workout_day_exercises = (day.workout_day_exercises||[]).filter(wde => wde.id !== workoutDayExerciseId);
+    renderDayCurrentExercises();
+    renderProgramDaysList();
+    showToast('تم الحذف', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الحذف: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
 }
 </script>
 </body>
