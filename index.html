@@ -536,10 +536,10 @@ textarea{resize:vertical; min-height:70px;}
 /* ============================================================
    الجزء 1: الإعدادات والاتصال بـ Supabase
    ============================================================ */
-const SUPABASE_URL = 'https://jvqzvfdmvudhelbhojue.supabase.co'; // رابط مشروع Supabase
+const SUPABASE_URL = 'https://jvqzvfdmvudhelbhojue.sb.co'; // رابط مشروع Supabase
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp2cXp2ZmRtdnVkaGVsYmhvanVlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0Mzk4NDIsImV4cCI6MjA5MTAxNTg0Mn0.7lAmAUjtE0EW3kODRTuHmNtOY_Z9bUS_3hePjhhy93M'; // anon/publishable key فقط
 
-let supabase = null;
+let sb = null;
 let supabaseReady = false;
 
 function initSupabase(){
@@ -547,7 +547,7 @@ function initSupabase(){
     console.warn('لم يتم إعداد بيانات اتصال Supabase بعد.');
     return false;
   }
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   supabaseReady = true;
   return true;
 }
@@ -652,7 +652,7 @@ async function flushOfflineQueue(){
   for(const op of queue){
     try{
       if(op.table === 'workout_sets'){
-        await supabase.from('workout_sets').upsert(op.data);
+        await sb.from('workout_sets').upsert(op.data);
       }
     }catch(e){
       state.offlineQueue.push(op); // أعد الإدراج إذا فشل مجددًا
@@ -716,7 +716,7 @@ async function handleLogin(e){
   btn.disabled = true; btn.textContent = 'جاري الدخول...';
 
   try{
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if(error) throw error;
     await onAuthSuccess(data.user);
   }catch(err){
@@ -739,7 +739,7 @@ async function handleSignup(e){
   btn.disabled = true; btn.textContent = 'جاري الإنشاء...';
 
   try{
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await sb.auth.signUp({
       email, password,
       options: { data: { display_name: name } }
     });
@@ -772,7 +772,7 @@ function translateAuthError(msg){
 
 async function handleLogout(){
   try{
-    await supabase.auth.signOut();
+    await sb.auth.signOut();
   }catch(e){}
   state.user = null;
   state.profile = null;
@@ -793,12 +793,12 @@ async function onAuthSuccess(user){
 async function loadUserData(){
   try{
     const [{data: profile}, {data: settings}, {data: schedState}, {data: days}, {data: exercises}, {data: categories}] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', state.user.id).single(),
-      supabase.from('user_settings').select('*').eq('user_id', state.user.id).single(),
-      supabase.from('schedule_state').select('*').eq('user_id', state.user.id).single(),
-      supabase.from('workout_days').select('*, workout_day_exercises(*, exercises(*))').eq('user_id', state.user.id).order('day_order'),
-      supabase.from('exercises').select('*').or(`user_id.is.null,user_id.eq.${state.user.id}`).order('sort_order'),
-      supabase.from('exercise_categories').select('*').order('sort_order'),
+      sb.from('profiles').select('*').eq('id', state.user.id).single(),
+      sb.from('user_settings').select('*').eq('user_id', state.user.id).single(),
+      sb.from('schedule_state').select('*').eq('user_id', state.user.id).single(),
+      sb.from('workout_days').select('*, workout_day_exercises(*, exercises(*))').eq('user_id', state.user.id).order('day_order'),
+      sb.from('exercises').select('*').or(`user_id.is.null,user_id.eq.${state.user.id}`).order('sort_order'),
+      sb.from('exercise_categories').select('*').order('sort_order'),
     ]);
 
     state.profile = profile;
@@ -842,7 +842,7 @@ async function createDefaultWorkoutProgram(){
 
   const createdDays = [];
   for(const d of dayDefs){
-    const { data, error } = await supabase.from('workout_days').insert({
+    const { data, error } = await sb.from('workout_days').insert({
       user_id: state.user.id, day_order: d.order, name_ar: d.name_ar, name_en: d.name_en, muscle_groups: d.groups
     }).select().single();
     if(error){ console.error(error); continue; }
@@ -855,7 +855,7 @@ async function createDefaultWorkoutProgram(){
 
     let sortOrder = 0;
     for(const ex of dayExercises){
-      await supabase.from('workout_day_exercises').insert({
+      await sb.from('workout_day_exercises').insert({
         workout_day_id: data.id, exercise_id: ex.id, sort_order: sortOrder++,
         target_sets: ex.suggested_sets, target_rep_range: ex.suggested_rep_range
       });
@@ -864,13 +864,13 @@ async function createDefaultWorkoutProgram(){
 
   // عيّن اليوم الأول كتمرين قادم
   if(createdDays.length > 0){
-    await supabase.from('schedule_state').update({ next_workout_day_id: createdDays[0].id }).eq('user_id', state.user.id);
+    await sb.from('schedule_state').update({ next_workout_day_id: createdDays[0].id }).eq('user_id', state.user.id);
   }
 
   // أعد تحميل البيانات بعد الإنشاء
   const [{data: days}, {data: schedState}] = await Promise.all([
-    supabase.from('workout_days').select('*, workout_day_exercises(*, exercises(*))').eq('user_id', state.user.id).order('day_order'),
-    supabase.from('schedule_state').select('*').eq('user_id', state.user.id).single(),
+    sb.from('workout_days').select('*, workout_day_exercises(*, exercises(*))').eq('user_id', state.user.id).order('day_order'),
+    sb.from('schedule_state').select('*').eq('user_id', state.user.id).single(),
   ]);
   state.workoutDays = days || [];
   state.scheduleState = schedState;
@@ -883,14 +883,14 @@ async function checkExistingSession(){
     showAuthError('لم يتم إعداد بيانات اتصال Supabase بعد. راجع أعلى الكود لإضافة SUPABASE_URL و SUPABASE_ANON_KEY.');
     return;
   }
-  const { data: { session } } = await supabase.auth.getSession();
+  const { data: { session } } = await sb.auth.getSession();
   if(session && session.user){
     await onAuthSuccess(session.user);
   }else{
     document.getElementById('auth-screen').style.display = 'flex';
   }
 
-  supabase.auth.onAuthStateChange((event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
     if(event === 'SIGNED_OUT'){
       state.user = null;
     }
@@ -937,13 +937,13 @@ async function advanceScheduleAfterCompletion(completedDayId){
   const next = getDayAfter(completedDayId);
   const today = todayDateStr();
 
-  await supabase.from('schedule_state').update({
+  await sb.from('schedule_state').update({
     next_workout_day_id: next.id,
     last_workout_date: today,
     current_streak: (state.scheduleState?.current_streak || 0) + 1,
   }).eq('user_id', state.user.id);
 
-  await supabase.from('schedule_events').insert({
+  await sb.from('schedule_events').insert({
     user_id: state.user.id, workout_day_id: completedDayId, event_date: today, status: 'completed'
   });
 
@@ -956,13 +956,13 @@ async function markWorkoutMissed(reason, reasonNote){
   const current = getNextWorkoutDay();
   const today = todayDateStr();
 
-  await supabase.from('schedule_events').insert({
+  await sb.from('schedule_events').insert({
     user_id: state.user.id, workout_day_id: current?.id || null, event_date: today,
     status: 'missed', reason, reason_note: reasonNote || null
   });
 
   // لا نغيّر next_workout_day_id — يبقى نفس التمرين القادم كما هو
-  await supabase.from('schedule_state').update({ current_streak: 0 }).eq('user_id', state.user.id);
+  await sb.from('schedule_state').update({ current_streak: 0 }).eq('user_id', state.user.id);
   state.scheduleState = { ...state.scheduleState, current_streak: 0 };
 
   showToast('تم تسجيل يوم الراحة. سيبقى نفس التمرين هو التالي في ترتيبك.', 'success');
@@ -974,12 +974,12 @@ async function skipToNextWorkout(reason){
   const today = todayDateStr();
   const next = getDayAfter(current.id);
 
-  await supabase.from('schedule_events').insert({
+  await sb.from('schedule_events').insert({
     user_id: state.user.id, workout_day_id: current?.id || null, event_date: today,
     status: 'skipped', reason: reason || 'تخطي يدوي'
   });
 
-  await supabase.from('schedule_state').update({ next_workout_day_id: next.id, current_streak: 0 }).eq('user_id', state.user.id);
+  await sb.from('schedule_state').update({ next_workout_day_id: next.id, current_streak: 0 }).eq('user_id', state.user.id);
   state.scheduleState = { ...state.scheduleState, next_workout_day_id: next.id, current_streak: 0 };
 
   showToast('تم تجاوز هذا التمرين. التمرين القادم الآن: ' + next.name_ar, 'success');
@@ -991,7 +991,7 @@ async function skipToNextWorkout(reason){
 
 /* جلب آخر أداء مكتمل لتمرين معين (آخر جلسة تحتوي عليه) */
 async function getLastPerformance(exerciseId){
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from('workout_exercises')
     .select('id, session_id, workout_sets(*), workout_sessions!inner(started_at, status, user_id)')
     .eq('exercise_id', exerciseId)
@@ -1064,7 +1064,7 @@ async function checkAndRecordPRs(exerciseId, set){
   ];
 
   for(const check of checks){
-    const { data: existing } = await supabase
+    const { data: existing } = await sb
       .from('personal_records')
       .select('*')
       .eq('user_id', state.user.id)
@@ -1075,7 +1075,7 @@ async function checkAndRecordPRs(exerciseId, set){
 
     const currentBest = existing && existing[0] ? existing[0].value : 0;
     if(check.value > currentBest){
-      await supabase.from('personal_records').insert({
+      await sb.from('personal_records').insert({
         user_id: state.user.id, exercise_id: exerciseId, record_type: check.type,
         value: check.value, weight_kg: set.weight_kg, reps: set.reps,
       });
@@ -1262,7 +1262,7 @@ function formatTimerMMSS(totalSeconds){
 /* إنشاء جلسة تمرين جديدة في Supabase وبدء المؤقت */
 async function startWorkoutSession(workoutDay, feelingState){
   try{
-    const { data: sessionRow, error } = await supabase.from('workout_sessions').insert({
+    const { data: sessionRow, error } = await sb.from('workout_sessions').insert({
       user_id: state.user.id,
       workout_day_id: workoutDay.id,
       day_name_ar: workoutDay.name_ar,
@@ -1501,7 +1501,7 @@ async function persistSet(exIdx, setIdx){
 
   try{
     if(!item.db_id){
-      const { data, error } = await supabase.from('workout_exercises').insert({
+      const { data, error } = await sb.from('workout_exercises').insert({
         session_id: state.activeSession.db_id,
         exercise_id: item.exercise.id,
         exercise_name_ar: item.exercise.name_ar,
@@ -1512,7 +1512,7 @@ async function persistSet(exIdx, setIdx){
       item.db_id = data.id;
     }
 
-    const { data: setRow, error: setErr } = await supabase.from('workout_sets').insert({
+    const { data: setRow, error: setErr } = await sb.from('workout_sets').insert({
       workout_exercise_id: item.db_id,
       set_number: set.set_number,
       weight_kg: set.weight_kg,
@@ -1546,7 +1546,7 @@ async function persistSet(exIdx, setIdx){
 async function confirmCancelWorkout(){
   if(!confirm('هل تريد إلغاء الجلسة الحالية؟ لن يتم حفظها ضمن سجل التمارين.')) return;
   try{
-    await supabase.from('workout_sessions').update({ status:'cancelled', ended_at: nowRiyadhISO() }).eq('id', state.activeSession.db_id);
+    await sb.from('workout_sessions').update({ status:'cancelled', ended_at: nowRiyadhISO() }).eq('id', state.activeSession.db_id);
   }catch(e){}
   state.activeSession = null;
   clearActiveSessionLocally();
@@ -1584,7 +1584,7 @@ async function finishWorkoutSession(){
   });
 
   try{
-    await supabase.from('workout_sessions').update({
+    await sb.from('workout_sessions').update({
       ended_at: endedAt,
       duration_seconds: durationSeconds,
       total_volume_kg: Math.round(totalVolume*100)/100,
@@ -1818,15 +1818,15 @@ pageRenderers.dashboard = async function(main){
     const monthStart = todayDateStr().slice(0,7) + '-01';
 
     const [{data: recentSessions}, {data: weekEvents}, {data: recentPRs}, {data: recentWeights}] = await Promise.all([
-      supabase.from('workout_sessions').select('*').eq('user_id', state.user.id).eq('status','completed').order('started_at',{ascending:false}).limit(1),
-      supabase.from('schedule_events').select('*').eq('user_id', state.user.id).gte('event_date', weekStart),
-      supabase.from('personal_records').select('*, exercises(name_ar)').eq('user_id', state.user.id).order('achieved_at',{ascending:false}).limit(3),
-      supabase.from('body_measurements').select('*').eq('user_id', state.user.id).order('measured_date',{ascending:false}).limit(2),
+      sb.from('workout_sessions').select('*').eq('user_id', state.user.id).eq('status','completed').order('started_at',{ascending:false}).limit(1),
+      sb.from('schedule_events').select('*').eq('user_id', state.user.id).gte('event_date', weekStart),
+      sb.from('personal_records').select('*, exercises(name_ar)').eq('user_id', state.user.id).order('achieved_at',{ascending:false}).limit(3),
+      sb.from('body_measurements').select('*').eq('user_id', state.user.id).order('measured_date',{ascending:false}).limit(2),
     ]);
 
-    const { data: weekVolumeSessions } = await supabase.from('workout_sessions').select('total_volume_kg, started_at')
+    const { data: weekVolumeSessions } = await sb.from('workout_sessions').select('total_volume_kg, started_at')
       .eq('user_id', state.user.id).eq('status','completed').gte('started_at', weekStart);
-    const { data: monthVolumeSessions } = await supabase.from('workout_sessions').select('total_volume_kg')
+    const { data: monthVolumeSessions } = await sb.from('workout_sessions').select('total_volume_kg')
       .eq('user_id', state.user.id).eq('status','completed').gte('started_at', monthStart);
 
     const weekVolume = (weekVolumeSessions||[]).reduce((s,x)=>s+(x.total_volume_kg||0),0);
@@ -1913,7 +1913,7 @@ pageRenderers.schedule = async function(main){
   const startDate = new Date(getWeekStartDate());
   const dayNames = ['أحد','اثنين','ثلاثاء','أربعاء','خميس','جمعة','سبت'];
 
-  const { data: events } = await supabase.from('schedule_events').select('*, workout_days(name_ar)')
+  const { data: events } = await sb.from('schedule_events').select('*, workout_days(name_ar)')
     .eq('user_id', state.user.id).gte('event_date', startDate.toISOString().slice(0,10)).order('event_date');
 
   const eventsByDate = {};
@@ -2035,7 +2035,7 @@ async function loadAndRenderExerciseProgress(exerciseId){
   const area = document.getElementById('progress-chart-area');
   area.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
 
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from('workout_exercises')
     .select('workout_sets(weight_kg, reps, is_warmup), workout_sessions!inner(started_at, status, user_id)')
     .eq('exercise_id', exerciseId)
@@ -2110,7 +2110,7 @@ async function renderProgressBodyweightTab(){
   const container = document.getElementById('progress-content');
   container.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
 
-  const { data, error } = await supabase.from('body_measurements').select('*').eq('user_id', state.user.id).order('measured_date', {ascending:true});
+  const { data, error } = await sb.from('body_measurements').select('*').eq('user_id', state.user.id).order('measured_date', {ascending:true});
 
   if(error || !data || data.length===0){
     container.innerHTML = `
@@ -2188,8 +2188,8 @@ async function saveBodyweight(){
   };
 
   try{
-    await supabase.from('body_measurements').insert(payload);
-    await supabase.from('profiles').update({ weight_kg: kg }).eq('id', state.user.id);
+    await sb.from('body_measurements').insert(payload);
+    await sb.from('profiles').update({ weight_kg: kg }).eq('id', state.user.id);
     state.profile.weight_kg = kg;
     showToast('تم حفظ الوزن بنجاح', 'success');
     navigateTo('progress');
@@ -2205,7 +2205,7 @@ async function saveBodyweight(){
 pageRenderers.history = async function(main){
   main.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
 
-  const { data, error } = await supabase.from('workout_sessions').select('*')
+  const { data, error } = await sb.from('workout_sessions').select('*')
     .eq('user_id', state.user.id).eq('status','completed').order('started_at',{ascending:false}).limit(50);
 
   if(error || !data || data.length===0){
@@ -2234,8 +2234,8 @@ async function openSessionDetail(sessionId){
   const main = document.getElementById('main-content');
   main.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
 
-  const { data: session } = await supabase.from('workout_sessions').select('*').eq('id', sessionId).single();
-  const { data: exercises } = await supabase.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId).order('sort_order');
+  const { data: session } = await sb.from('workout_sessions').select('*').eq('id', sessionId).single();
+  const { data: exercises } = await sb.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId).order('sort_order');
 
   main.innerHTML = `
     <button class="btn btn-ghost" onclick="navigateTo('history')">→ رجوع للسجل</button>
@@ -2341,7 +2341,7 @@ async function saveProfileSettings(){
   };
 
   try{
-    await supabase.from('profiles').update(payload).eq('id', state.user.id);
+    await sb.from('profiles').update(payload).eq('id', state.user.id);
     state.profile = { ...state.profile, ...payload };
     document.getElementById('header-app-name').textContent = `تمارين ${payload.display_name}`;
     showToast('تم حفظ البيانات', 'success');
@@ -2357,7 +2357,7 @@ async function saveRestSettings(){
     rest_time_isolation_seconds: parseInt(document.getElementById('set-rest-isolation').value) || 90,
   };
   try{
-    await supabase.from('user_settings').update(payload).eq('user_id', state.user.id);
+    await sb.from('user_settings').update(payload).eq('user_id', state.user.id);
     state.settings = { ...state.settings, ...payload };
     showToast('تم حفظ إعدادات الراحة', 'success');
   }catch(err){
@@ -2368,7 +2368,7 @@ async function saveRestSettings(){
 
 /* تصدير سجل التمارين كملف CSV بسيط */
 async function exportHistoryCSV(){
-  const { data } = await supabase.from('workout_sessions').select('*').eq('user_id', state.user.id).eq('status','completed').order('started_at');
+  const { data } = await sb.from('workout_sessions').select('*').eq('user_id', state.user.id).eq('status','completed').order('started_at');
   if(!data || data.length===0){ showToast('لا يوجد سجل لتصديره', 'error'); return; }
 
   const rows = [['التاريخ','التمرين','المدة (دقيقة)','عدد المجموعات','حجم التدريب (kg)','حجم التدريب (lb)']];
@@ -2489,11 +2489,11 @@ async function saveExerciseForm(existingId){
 
   try{
     if(existingId){
-      await supabase.from('exercises').update(payload).eq('id', existingId);
+      await sb.from('exercises').update(payload).eq('id', existingId);
     }else{
-      await supabase.from('exercises').insert(payload);
+      await sb.from('exercises').insert(payload);
     }
-    const { data: exercises } = await supabase.from('exercises').select('*').or(`user_id.is.null,user_id.eq.${state.user.id}`).order('sort_order');
+    const { data: exercises } = await sb.from('exercises').select('*').or(`user_id.is.null,user_id.eq.${state.user.id}`).order('sort_order');
     state.exerciseCache = exercises || [];
     closeModal('exercise-form-modal');
     renderExerciseLibraryList(state.exerciseCache);
@@ -2507,7 +2507,7 @@ async function saveExerciseForm(existingId){
 async function deleteExercise(id){
   if(!confirm('هل تريد حذف هذا التمرين؟')) return;
   try{
-    await supabase.from('exercises').delete().eq('id', id);
+    await sb.from('exercises').delete().eq('id', id);
     state.exerciseCache = state.exerciseCache.filter(e => e.id !== id);
     renderExerciseLibraryList(state.exerciseCache);
     showToast('تم الحذف', 'success');
