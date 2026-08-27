@@ -623,6 +623,7 @@ const state = {
   restTimer: {seconds:0, running:false, intervalId:null, label:''},
   workoutTimerIntervalId: null,
   offlineQueue: [], // للعمليات التي فشلت بسبب ضعف الاتصال (workout_sets بشكل أساسي)
+  todayCheckin: null, // تسجيل اليوم (الشعور + قرار التمرين) من daily_checkins
 };
 
 const OFFLINE_QUEUE_KEY = 'gt_offline_queue_v1';
@@ -877,9 +878,46 @@ async function loadUserData(){
 
     loadOfflineQueue();
     flushOfflineQueue();
+
+    await loadTodayCheckin();
   }catch(err){
     console.error(err);
     showToast('تعذر تحميل بيانات الحساب. تحقق من الاتصال.', 'error');
+  }
+}
+
+/* ============================================================
+   تسجيل اليوم (daily_checkins): الشعور + قرار التمرين قبل أي جلسة فعلية
+   ============================================================ */
+async function loadTodayCheckin(){
+  try{
+    const { data } = await sb.from('daily_checkins').select('*')
+      .eq('user_id', state.user.id).eq('checkin_date', todayDateStr()).maybeSingle();
+    state.todayCheckin = data || null;
+  }catch(err){
+    console.error(err);
+    state.todayCheckin = null;
+  }
+}
+
+/* حفظ/تحديث تسجيل اليوم — upsert بمفتاح (user_id, checkin_date) الفريد بقاعدة البيانات */
+async function saveTodayCheckin(fields){
+  const payload = {
+    user_id: state.user.id,
+    checkin_date: todayDateStr(),
+    updated_at: nowRiyadhISO(),
+    ...fields,
+  };
+  try{
+    const { data, error } = await sb.from('daily_checkins')
+      .upsert(payload, { onConflict: 'user_id,checkin_date' }).select().single();
+    if(error) throw error;
+    state.todayCheckin = data;
+    return data;
+  }catch(err){
+    console.error(err);
+    showToast('تعذر حفظ حالة اليوم: ' + (err.message || 'خطأ غير معروف'), 'error');
+    return null;
   }
 }
 
@@ -1165,6 +1203,38 @@ const FEELING_OPTIONS = [
   { key:'bad_sleep', icon:'◑', title:'نوم سيئ', sub:'لم أنم بشكل كافٍ' },
   { key:'low_energy', icon:'○', title:'طاقة منخفضة', sub:'أشعر بخمول عام' },
 ];
+
+const FEELING_LABELS_AR = Object.fromEntries(FEELING_OPTIONS.map(o => [o.key, o.title]));
+const LOW_ENERGY_FEELINGS = ['tired','low_energy','bad_sleep','just_woke_up'];
+
+/* تحليل بسيط مبني على بيانات فعلية: يقارن حالتك قبل التمرين بنتيجة هذا التمرين تحديدًا */
+function buildFeelingAnalysisText(feelingKey, comparison, setsCount){
+  const feelingLabel = FEELING_LABELS_AR[feelingKey] || feelingKey;
+  if(!feelingKey) return null;
+
+  const wasLowEnergy = LOW_ENERGY_FEELINGS.includes(feelingKey);
+
+  if(!comparison || comparison.volumeDeltaPct == null){
+    return wasLowEnergy
+      ? `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، وأكملت ${setsCount} مجموعة رغم ذلك. لا توجد بيانات كافية بعد للمقارنة بجلسة سابقة مشابهة.`
+      : `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، وأكملت ${setsCount} مجموعة اليوم.`;
+  }
+
+  const pct = comparison.volumeDeltaPct;
+  if(wasLowEnergy && pct >= 0){
+    return `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، ومع ذلك أكملت ${setsCount} مجموعة وحققت حجم تدريب ${pct > 0 ? 'أعلى من' : 'مشابهًا لـ'} تمرينك السابق.`;
+  }
+  if(wasLowEnergy && pct < 0){
+    return `بدأت اليوم وأنت تشعر بـ"${feelingLabel}"، ويظهر أن حجم التدريب كان أقل بنسبة ${Math.abs(pct)}% من الجلسة السابقة. لا ترفع الأوزان في الجلسة القادمة بشكل عدواني حتى تستعيد نشاطك.`;
+  }
+  if(!wasLowEnergy && pct > 0){
+    return `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، وحققت حجم تدريب أعلى بنسبة ${pct}% من جلستك السابقة — استمر على هذا المنوال.`;
+  }
+  if(!wasLowEnergy && pct < 0){
+    return `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، لكن حجم التدريب كان أقل بنسبة ${Math.abs(pct)}% من المرة السابقة. راقب مستوى راحتك وتغذيتك قبل التمرين القادم.`;
+  }
+  return `بدأت التمرين وأنت تشعر بـ"${feelingLabel}"، وحافظت على نفس مستوى حجم التدريب مقارنة بالمرة السابقة.`;
+}
 
 const FEELING_RECOMMENDATIONS = {
   tired: [
@@ -1893,6 +1963,8 @@ async function finishWorkoutSession(){
       exerciseBreakdown,
       personalRecords: session.achievedPRsThisSession || [],
       comparison,
+      feelingKey: session.feelingState || null,
+      feelingAnalysis: buildFeelingAnalysisText(session.feelingState, comparison, totalSetsCount),
     };
 
     state.activeSession = null;
@@ -1960,6 +2032,12 @@ function renderWorkoutSummary(summary){
       <div class="stat-box"><div class="stat-label">عدد المجموعات</div><div class="stat-value">${summary.setsCount}</div></div>
       <div class="stat-box"><div class="stat-label">حجم التدريب</div><div class="stat-value">${Math.round(summary.totalVolume)} <span class="unit">kg</span></div></div>
     </div>
+
+    ${summary.feelingAnalysis ? `
+    <div class="section-title">تحليل الحالة</div>
+    <div class="card">
+      <div class="text-sm">${escapeHtml(summary.feelingAnalysis)}</div>
+    </div>` : ''}
 
     <div class="section-title">توصية غذائية بعد التمرين</div>
     <div class="card">
@@ -2071,6 +2149,19 @@ function buildShareCardElement(summary){
   const userName = (state.profile?.display_name || 'ATHLETE').toUpperCase();
   const muscleLabel = (summary.dayNameEn || summary.dayNameAr || '').toUpperCase();
 
+  const FEELING_LABELS_EN = {
+    tired:'TIRED', ready:'ENERGETIC', just_woke_up:'JUST WOKE UP',
+    pain:'DISCOMFORT', bad_sleep:'LOW SLEEP', low_energy:'LOW ENERGY',
+  };
+  const feelingLabelEn = summary.feelingKey ? (FEELING_LABELS_EN[summary.feelingKey] || summary.feelingKey.toUpperCase()) : null;
+
+  // نتيجة مبنية على بيانات فعلية فقط — لا نكتب عبارة تحفيزية بدون رقم يدعمها
+  let resultLine = null;
+  if(comparison && comparison.volumeDeltaPct != null){
+    const sign = comparison.volumeDeltaPct > 0 ? '+' : '';
+    resultLine = `${sign}${comparison.volumeDeltaPct}% VOLUME`;
+  }
+
   const card = document.createElement('div');
   card.style.cssText = `
     position:fixed; top:-9999px; left:-9999px;
@@ -2091,6 +2182,11 @@ function buildShareCardElement(summary){
     <div style="font-size:15px; font-weight:700; letter-spacing:0.04em; color:#8A9694; margin-bottom:4px;">${escapeHtml(userName)}</div>
     <div style="font-size:27px; font-weight:700; letter-spacing:0.01em; color:#1C2422; line-height:1.15; margin-bottom:6px;">${escapeHtml(muscleLabel)}</div>
     <div style="font-size:11.5px; color:#8A9694; font-weight:600; letter-spacing:0.03em;">${formatDateEnglishShort(summary.endedAt)}</div>
+    ${feelingLabelEn ? `
+    <div style="display:flex; align-items:center; gap:10px; margin-top:14px;">
+      <div style="font-size:10.5px; font-weight:700; letter-spacing:0.05em; color:#8A9694;">STARTED <span style="color:#1C2422;">${feelingLabelEn}</span></div>
+      ${resultLine ? `<div style="width:3px; height:3px; border-radius:50%; background:#C4CAC8;"></div><div style="font-size:10.5px; font-weight:700; letter-spacing:0.05em; color:${resultLine.startsWith('+')?'#3F7D52':'#8A9694'};">${resultLine}</div>` : ''}
+    </div>` : ''}
   `;
 
   // ============ صف الإحصائيات الأساسية ============
@@ -2182,8 +2278,12 @@ pageRenderers.today = function(main){
     renderLiveWorkoutScreen();
     return;
   }
-  // الخطوة 1: كيف تشعر اليوم — أول شي يظهر قبل أي شي ثاني
-  renderTodayFeelingStep(main);
+  // الشعور بقى يُسجَّل من لوحة التحكم مباشرة الآن — لو موجود نستخدمه ونتخطى إعادة السؤال
+  if(state.todayCheckin?.feeling_state){
+    renderTodayUnitStep(main, state.todayCheckin.feeling_state);
+  }else{
+    renderTodayFeelingStep(main);
+  }
 };
 
 function renderTodayFeelingStep(main){
@@ -2442,13 +2542,10 @@ pageRenderers.dashboard = async function(main){
     const totalScheduledDays = (weekEvents||[]).length || 1;
     const adherence = Math.round((workoutDaysThisWeek / Math.max(totalScheduledDays,1)) * 100);
 
+    await loadTodayCheckin();
+
     main.innerHTML = `
-      <div class="hero-card">
-        <div class="eyebrow">تمرين اليوم القادم</div>
-        <h2>${nextDay ? escapeHtml(nextDay.name_ar) : '—'}</h2>
-        <div class="sub">${nextDay ? escapeHtml(nextDay.name_en) : ''}</div>
-        <button class="btn btn-primary" onclick="navigateTo('today')">الذهاب لتمرين اليوم</button>
-      </div>
+      <div id="today-checkin-area"></div>
 
       <div class="section-title">هذا الأسبوع</div>
       <div class="stat-grid">
@@ -2488,11 +2585,163 @@ pageRenderers.dashboard = async function(main){
           </div>`).join('') : `<div class="empty-state"><div class="empty-sub">لا توجد أرقام قياسية بعد</div></div>`}
       </div>
     `;
+
+    renderDashboardCheckinArea(nextDay);
   }catch(err){
     console.error(err);
     main.innerHTML = `<div class="empty-state"><div class="empty-title">تعذر تحميل البيانات</div><div class="empty-sub">تحقق من الاتصال بالإنترنت</div></div>`;
   }
 };
+
+/* ============================================================
+   قسم "ماذا تشعر اليوم / هل ستتمرن اليوم" على لوحة التحكم مباشرة
+   ============================================================ */
+const POSTPONE_REASONS = [
+  { key:'busy', label:'مشغول' },
+  { key:'tired', label:'تعبان' },
+  { key:'traveling', label:'مسافر' },
+  { key:'gym_closed', label:'النادي مغلق' },
+  { key:'injury', label:'إصابة / ألم' },
+  { key:'bad_sleep', label:'نوم سيئ' },
+  { key:'emergency', label:'ظرف طارئ' },
+  { key:'other', label:'سبب آخر' },
+];
+
+function renderDashboardCheckinArea(nextDay){
+  const area = document.getElementById('today-checkin-area');
+  if(!area) return;
+  const checkin = state.todayCheckin;
+
+  // إذا سبق واختار "سأتمرن" اليوم — نعرض بطاقة التمرين مباشرة
+  if(checkin && checkin.decision === 'workout'){
+    area.innerHTML = `
+      <div class="hero-card">
+        <div class="eyebrow">تمرين اليوم</div>
+        <h2>${nextDay ? escapeHtml(nextDay.name_ar) : '—'}</h2>
+        <div class="sub">${nextDay ? escapeHtml(nextDay.name_en) : ''}</div>
+        <button class="btn btn-primary" onclick="navigateTo('today')">ابدأ التمرين</button>
+      </div>
+      <button class="btn btn-ghost mt-8" onclick="resetTodayCheckin()">تغيير حالة اليوم</button>
+    `;
+    return;
+  }
+
+  // إذا سبق واختار "سأؤجل" اليوم — نعرض حالة التأجيل + التمرين القادم
+  if(checkin && checkin.decision === 'postponed'){
+    area.innerHTML = `
+      <div class="card">
+        <div class="section-title" style="margin-top:0">تم تأجيل تمرين اليوم</div>
+        <div class="text-sm text-faint mb-12">السبب: ${escapeHtml(POSTPONE_REASONS.find(r=>r.key===checkin.postpone_reason)?.label || checkin.postpone_reason || '—')}</div>
+        <div class="list-row">
+          <div><div class="title">التمرين القادم</div><div class="sub">${nextDay ? escapeHtml(nextDay.name_ar) : '—'}</div></div>
+        </div>
+      </div>
+      <button class="btn btn-ghost mt-8" onclick="resetTodayCheckin()">تغيير حالة اليوم</button>
+    `;
+    return;
+  }
+
+  // لسا ما اختار شي اليوم — نعرض "ماذا تشعر" ثم "هل ستتمرن"
+  area.innerHTML = `
+    <div class="card">
+      <div class="section-title" style="margin-top:0">ماذا تشعر اليوم؟</div>
+      <div class="feeling-options" id="dash-feeling-opts"></div>
+    </div>
+    <div class="card mt-12" id="dash-decision-card" style="display:none">
+      <div class="section-title" style="margin-top:0">هل ستتمرن اليوم؟</div>
+      <button class="btn btn-primary mb-8" id="dash-decide-workout">نعم، سأتمرن</button>
+      <button class="btn btn-secondary" id="dash-decide-postpone">سأؤجل التمرين</button>
+    </div>
+    <div id="dash-postpone-reasons" class="card mt-12" style="display:none"></div>
+  `;
+
+  const optsWrap = document.getElementById('dash-feeling-opts');
+  let selectedFeeling = null;
+  FEELING_OPTIONS.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'feeling-opt';
+    btn.innerHTML = `<div class="fo-dot">${opt.icon}</div><div class="fo-text"><div class="fo-title">${opt.title}</div><div class="fo-sub">${opt.sub}</div></div>`;
+    btn.onclick = async () => {
+      selectedFeeling = opt.key;
+      optsWrap.querySelectorAll('.feeling-opt').forEach(o => o.classList.remove('selected'));
+      btn.classList.add('selected');
+      await saveTodayCheckin({ feeling_state: selectedFeeling });
+      document.getElementById('dash-decision-card').style.display = 'block';
+    };
+    optsWrap.appendChild(btn);
+  });
+
+  document.getElementById('dash-decide-workout').onclick = async () => {
+    if(!selectedFeeling && !state.todayCheckin?.feeling_state){
+      showToast('اختر شعورك اليوم أولًا', 'error'); return;
+    }
+    await saveTodayCheckin({ decision: 'workout' });
+    renderDashboardCheckinArea(nextDay);
+  };
+
+  document.getElementById('dash-decide-postpone').onclick = () => {
+    if(!selectedFeeling && !state.todayCheckin?.feeling_state){
+      showToast('اختر شعورك اليوم أولًا', 'error'); return;
+    }
+    const reasonsArea = document.getElementById('dash-postpone-reasons');
+    reasonsArea.style.display = 'block';
+    reasonsArea.innerHTML = `
+      <div class="section-title" style="margin-top:0">سبب التأجيل</div>
+      <div class="flex-col gap-8" id="dash-reasons-list"></div>
+      <div class="input-group mt-12">
+        <label>سبب مخصص (اختياري)</label>
+        <textarea id="dash-postpone-note" placeholder="مثلًا: عندي اجتماع اليوم"></textarea>
+      </div>
+      <button class="btn btn-primary mt-8" id="dash-confirm-postpone">حفظ التأجيل</button>
+    `;
+    const list = document.getElementById('dash-reasons-list');
+    let selectedReason = null;
+    POSTPONE_REASONS.forEach(r => {
+      const b = document.createElement('button');
+      b.className = 'btn btn-secondary';
+      b.style.justifyContent = 'flex-start';
+      b.textContent = r.label;
+      b.onclick = () => {
+        selectedReason = r.key;
+        list.querySelectorAll('button').forEach(x=>{x.classList.remove('btn-primary'); x.classList.add('btn-secondary');});
+        b.classList.remove('btn-secondary'); b.classList.add('btn-primary');
+      };
+      list.appendChild(b);
+    });
+    document.getElementById('dash-confirm-postpone').onclick = async () => {
+      if(!selectedReason){ showToast('اختر سببًا أولًا', 'error'); return; }
+      const note = document.getElementById('dash-postpone-note').value.trim();
+      await saveTodayCheckin({ decision:'postponed', postpone_reason:selectedReason, postpone_note: note || null });
+      await postponeTodayWorkout(selectedReason, note);
+      renderDashboardCheckinArea(nextDay);
+    };
+  };
+}
+
+async function resetTodayCheckin(){
+  if(!confirm('هل تريد تغيير حالة اليوم؟')) return;
+  try{
+    await sb.from('daily_checkins').delete().eq('user_id', state.user.id).eq('checkin_date', todayDateStr());
+  }catch(e){ console.error(e); }
+  state.todayCheckin = null;
+  navigateTo('dashboard');
+}
+
+/* تأجيل تمرين اليوم: يسجَّل بحالة منفصلة عن "تخطي"، ولا يغيّر ترتيب البرنامج (يبقى نفس التمرين غدًا) */
+async function postponeTodayWorkout(reason, note){
+  const current = getNextWorkoutDay();
+  const today = todayDateStr();
+  try{
+    await sb.from('schedule_events').insert({
+      user_id: state.user.id, workout_day_id: current?.id || null, event_date: today,
+      status: 'postponed', reason, reason_note: note || null
+    });
+    // التأجيل لا يغيّر next_workout_day_id — يبقى نفس التمرين مجدولًا لغدًا
+    showToast('تم تأجيل التمرين. سيبقى نفس التمرين مجدولًا لك.', 'success');
+  }catch(err){
+    console.error(err);
+  }
+}
 
 function getWeekStartDate(){
   const now = new Date();
@@ -2590,15 +2839,76 @@ pageRenderers.progress = async function(main){
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="exercise" onclick="switchProgressTab('exercise')">تمرين معيّن</button>
       <button class="tab-btn" data-tab="bodyweight" onclick="switchProgressTab('bodyweight')">وزن الجسم</button>
+      <button class="tab-btn" data-tab="feeling" onclick="switchProgressTab('feeling')">الحالة والأداء</button>
     </div>
     <div id="progress-content"></div>
   `;
   renderProgressExerciseTab();
 };
 
+/* الأولوية 3: تراكم العلاقة بين الحالة الشعورية وحجم التدريب عبر الوقت — بيانات حقيقية فقط، بدون اختراع نتائج */
+async function renderProgressFeelingTab(){
+  const container = document.getElementById('progress-content');
+  container.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
+
+  const { data, error } = await sb.from('workout_sessions')
+    .select('feeling_state, total_volume_kg')
+    .eq('user_id', state.user.id).eq('status','completed')
+    .not('feeling_state','is', null)
+    .order('started_at', { ascending:false }).limit(30);
+
+  if(error || !data || data.length < 4){
+    container.innerHTML = `<div class="empty-state"><div class="empty-title">لا توجد بيانات كافية للتحليل بعد</div><div class="empty-sub">سجّل حالتك قبل كل تمرين وأنجز عدة جلسات ليظهر التحليل هنا</div></div>`;
+    return;
+  }
+
+  const buckets = {};
+  data.forEach(s => {
+    if(!s.total_volume_kg) return;
+    if(!buckets[s.feeling_state]) buckets[s.feeling_state] = [];
+    buckets[s.feeling_state].push(s.total_volume_kg);
+  });
+
+  const summaries = Object.entries(buckets)
+    .filter(([,vals]) => vals.length >= 2)
+    .map(([key, vals]) => ({
+      key, count: vals.length,
+      avg: Math.round(vals.reduce((a,b)=>a+b,0) / vals.length),
+    }));
+
+  if(summaries.length < 2){
+    container.innerHTML = `<div class="empty-state"><div class="empty-title">لا توجد بيانات كافية للتحليل بعد</div><div class="empty-sub">نحتاج على الأقل حالتين مختلفتين مسجّلتين عبر عدة تمارين للمقارنة</div></div>`;
+    return;
+  }
+
+  summaries.sort((a,b) => b.avg - a.avg);
+  const best = summaries[0];
+  const worst = summaries[summaries.length-1];
+  const pctDiff = worst.avg > 0 ? Math.round(((best.avg - worst.avg) / worst.avg) * 100) : 0;
+
+  const analysisText = pctDiff > 0
+    ? `في آخر ${data.length} تمارين مسجّلة، عندما سجّلت أنك "${FEELING_LABELS_AR[best.key]||best.key}"، كان متوسط حجم التدريب أعلى بنسبة ${pctDiff}% مقارنة بالأيام التي سجّلت فيها أنك "${FEELING_LABELS_AR[worst.key]||worst.key}".`
+    : `لا يوجد فرق واضح في حجم التدريب بين حالاتك الشعورية المختلفة حتى الآن.`;
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="section-title" style="margin-top:0">العلاقة بين شعورك وأداء تمرينك</div>
+      <div class="text-sm">${analysisText}</div>
+    </div>
+    <div class="card">
+      ${summaries.map(s => `
+        <div class="list-row">
+          <div><div class="title">${FEELING_LABELS_AR[s.key]||s.key}</div><div class="sub">${s.count} جلسة</div></div>
+          <div>${s.avg} kg متوسط</div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
 function switchProgressTab(tab){
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===tab));
   if(tab==='exercise') renderProgressExerciseTab();
+  else if(tab==='feeling') renderProgressFeelingTab();
   else renderProgressBodyweightTab();
 }
 
@@ -2889,10 +3199,56 @@ async function recomputeSessionAggregates(sessionId){
 
 /* حذف أي أرقام قياسية مرتبطة بمجموعات محددة قبل حذفها — لأن العلاقة بقاعدة البيانات SET NULL وليست Cascade،
    فلو ما نظفناها يدويًا، تبقى الأرقام القياسية ظاهرة بلوحة التحكم حتى بعد حذف التمرين الأصلي فعليًا */
+/* إعادة حساب الرقم القياسي الحقيقي لتمرين معيّن من البيانات المتبقية فعليًا (تُستخدم بعد أي حذف) */
+async function recomputePRForExercise(exerciseId){
+  try{
+    const { data: exWorkouts } = await sb.from('workout_exercises')
+      .select('workout_sets(weight_kg,reps,is_warmup), workout_sessions!inner(user_id,status)')
+      .eq('exercise_id', exerciseId)
+      .eq('workout_sessions.user_id', state.user.id)
+      .eq('workout_sessions.status','completed');
+
+    const bestByType = { max_weight:0, max_reps:0, best_volume:0, estimated_1rm:0 };
+    const bestSetByType = { max_weight:null, max_reps:null, best_volume:null, estimated_1rm:null };
+
+    (exWorkouts||[]).forEach(ex => {
+      (ex.workout_sets||[]).forEach(s => {
+        if(s.is_warmup || !s.weight_kg || !s.reps) return;
+        const vol = s.weight_kg * s.reps;
+        const e1rm = s.weight_kg * (1 + s.reps/30);
+        if(s.weight_kg > bestByType.max_weight){ bestByType.max_weight = s.weight_kg; bestSetByType.max_weight = s; }
+        if(s.reps > bestByType.max_reps){ bestByType.max_reps = s.reps; bestSetByType.max_reps = s; }
+        if(vol > bestByType.best_volume){ bestByType.best_volume = vol; bestSetByType.best_volume = s; }
+        if(e1rm > bestByType.estimated_1rm){ bestByType.estimated_1rm = e1rm; bestSetByType.estimated_1rm = s; }
+      });
+    });
+
+    for(const type of ['max_weight','max_reps','best_volume','estimated_1rm']){
+      const bestSet = bestSetByType[type];
+      if(bestSet){
+        await sb.from('personal_records').insert({
+          user_id: state.user.id, exercise_id: exerciseId, record_type: type,
+          value: Math.round(bestByType[type]*100)/100, weight_kg: bestSet.weight_kg, reps: bestSet.reps,
+        });
+      }
+      // لو ما بقيت أي مجموعة فعلية لهذا التمرين، نتركه بدون رقم قياسي — هذا صحيح، لا نخترع قيمة
+    }
+  }catch(err){
+    console.error(err);
+  }
+}
+
 async function cleanupPersonalRecordsForSets(setIds){
   if(!setIds || setIds.length === 0) return;
   try{
+    const { data: affected } = await sb.from('personal_records').select('exercise_id').in('workout_set_id', setIds);
+    const affectedExerciseIds = [...new Set((affected||[]).map(r=>r.exercise_id).filter(Boolean))];
+
     await sb.from('personal_records').delete().in('workout_set_id', setIds);
+
+    for(const exId of affectedExerciseIds){
+      await recomputePRForExercise(exId);
+    }
   }catch(err){
     console.error(err);
   }
