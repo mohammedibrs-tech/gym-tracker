@@ -1442,17 +1442,34 @@ function renderExerciseCards(listEl){
   listEl.innerHTML = session.exercises.map((item, idx) => renderExerciseCardHTML(item, idx)).join('');
 }
 
+/* أدوات وحدة الوزن النشطة أثناء الجلسة الحالية (تعتمد على اختيار المستخدم قبل بدء التمرين) */
+function getActiveWeightUnit(){
+  return (state.settings?.weight_unit_display === 'kg') ? 'kg' : 'lb';
+}
+function weightKgForDisplay(kg){
+  if(kg == null) return '';
+  return getActiveWeightUnit() === 'kg' ? kg : kgToLb(kg);
+}
+function displayValueToKg(value){
+  const num = parseFloat(value);
+  if(isNaN(num)) return null;
+  return getActiveWeightUnit() === 'kg' ? num : lbToKg(num);
+}
+
 function renderExerciseCardHTML(item, idx){
   const ex = item.exercise;
+  const unit = getActiveWeightUnit();
+  const weightStep = unit === 'kg' ? 2.5 : 5;
+
   const lastPerfHtml = item.lastPerformance
     ? `<div class="last-performance">
          <div class="lp-label">آخر مرة — ${formatDateAr(item.lastPerformance.date)}</div>
-         ${item.lastPerformance.sets.map(s => `Set ${s.set_number}: ${kgToLb(s.weight_kg)} lb × ${s.reps}${s.rir!=null?` (RIR ${s.rir})`:''}`).join(' &nbsp;|&nbsp; ')}
+         ${item.lastPerformance.sets.map(s => `Set ${s.set_number}: ${weightKgForDisplay(s.weight_kg)} ${unit} × ${s.reps}${s.rir!=null?` (RIR ${s.rir})`:''}`).join(' &nbsp;|&nbsp; ')}
        </div>`
     : `<div class="last-performance"><div class="lp-label">لا يوجد أداء سابق مسجل لهذا التمرين</div></div>`;
 
   const suggestionHtml = item.suggestion
-    ? `<div class="suggested-box">الوزن المقترح اليوم: ${item.suggestion.weight_lb} lb (${item.suggestion.weight_kg} kg) — ${escapeHtml(item.suggestion.note)}</div>`
+    ? `<div class="suggested-box">الوزن المقترح اليوم: ${unit==='kg' ? item.suggestion.weight_kg+' kg' : item.suggestion.weight_lb+' lb'} — ${escapeHtml(item.suggestion.note)}</div>`
     : '';
 
   const setsRows = item.sets.map((s, sidx) => `
@@ -1460,13 +1477,13 @@ function renderExerciseCardHTML(item, idx){
       <div class="set-row-label">${s.is_warmup ? 'إحماء' : 'Set ' + s.set_number}</div>
       <div class="set-stepper-group">
         <div class="stepper">
-          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight_lb',-5)">－</button>
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight',${-weightStep})">－</button>
           <div class="stepper-value">
-            <input type="number" step="0.5" inputmode="decimal" value="${s.weight_kg!=null?kgToLb(s.weight_kg):''}"
-              onchange="updateSetField(${idx},${sidx},'weight_lb',this.value)">
-            <span class="stepper-unit">lb</span>
+            <input type="number" step="0.5" inputmode="decimal" value="${s.weight_kg!=null?weightKgForDisplay(s.weight_kg):''}"
+              onchange="updateSetField(${idx},${sidx},'weight',this.value)">
+            <span class="stepper-unit">${unit}</span>
           </div>
-          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight_lb',5)">＋</button>
+          <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'weight',${weightStep})">＋</button>
         </div>
         <div class="stepper">
           <button class="stepper-btn" onclick="stepSetField(${idx},${sidx},'reps',-1)">－</button>
@@ -1519,10 +1536,10 @@ function toggleSetExtra(exIdx, setIdx){
 /* تعديل سريع بضغطة واحدة على +/- بدل فتح لوحة المفاتيح */
 function stepSetField(exIdx, setIdx, field, delta){
   const set = state.activeSession.exercises[exIdx].sets[setIdx];
-  if(field === 'weight_lb'){
-    const currentLb = set.weight_kg != null ? kgToLb(set.weight_kg) : 0;
-    const newLb = Math.max(0, currentLb + delta);
-    set.weight_kg = lbToKg(newLb);
+  if(field === 'weight'){
+    const currentDisplay = set.weight_kg != null ? weightKgForDisplay(set.weight_kg) : 0;
+    const newDisplay = Math.max(0, currentDisplay + delta);
+    set.weight_kg = displayValueToKg(newDisplay);
   }else if(field === 'reps'){
     set.reps = Math.max(0, (set.reps || 0) + delta);
   }
@@ -1532,8 +1549,8 @@ function stepSetField(exIdx, setIdx, field, delta){
 
 function updateSetField(exIdx, setIdx, field, rawValue){
   const set = state.activeSession.exercises[exIdx].sets[setIdx];
-  if(field === 'weight_lb'){
-    set.weight_kg = rawValue === '' ? null : lbToKg(parseFloat(rawValue));
+  if(field === 'weight'){
+    set.weight_kg = rawValue === '' ? null : displayValueToKg(rawValue);
   }else if(field === 'reps'){
     set.reps = rawValue === '' ? null : parseInt(rawValue);
   }else if(field === 'rpe'){
@@ -1978,8 +1995,42 @@ pageRenderers.today = function(main){
 function renderTodayFeelingStep(main){
   main.innerHTML = `<div id="feeling-check-area"></div>`;
   renderFeelingScreen(document.getElementById('feeling-check-area'), (feelingKey) => {
-    renderTodayModeChoice(main, feelingKey);
+    renderTodayUnitStep(main, feelingKey);
   });
+}
+
+/* خطوة جديدة: أوزان النادي اليوم بالباوند أو الكيلو؟ (تحدد وحدة الإدخال أثناء هذا التمرين) */
+function renderTodayUnitStep(main, feelingKey){
+  const currentUnit = (state.settings?.weight_unit_display === 'kg') ? 'kg' : 'lb';
+
+  main.innerHTML = `
+    <div class="section-title" style="margin-top:0">أوزان النادي اليوم؟</div>
+    <div class="text-sm text-faint mb-12">نستخدمها لعرض وتسجيل الأوزان أثناء هذا التمرين مباشرة بنفس وحدتك.</div>
+    <div class="feeling-options">
+      <button class="feeling-opt ${currentUnit==='lb'?'selected':''}" id="unit-lb">
+        <div class="fo-dot">lb</div>
+        <div class="fo-text"><div class="fo-title">بالباوند</div></div>
+      </button>
+      <button class="feeling-opt ${currentUnit==='kg'?'selected':''}" id="unit-kg">
+        <div class="fo-dot">kg</div>
+        <div class="fo-text"><div class="fo-title">بالكيلوغرام</div></div>
+      </button>
+    </div>
+    <button class="btn btn-ghost mt-16" onclick="renderTodayFeelingStep(document.getElementById('main-content'))">→ رجوع</button>
+  `;
+
+  const proceed = async (unit) => {
+    state.settings = { ...(state.settings||{}), weight_unit_display: unit };
+    try{
+      if(state.user?.id){
+        await sb.from('user_settings').update({ weight_unit_display: unit }).eq('user_id', state.user.id);
+      }
+    }catch(e){ console.error(e); }
+    renderTodayModeChoice(main, feelingKey);
+  };
+
+  document.getElementById('unit-lb').onclick = () => proceed('lb');
+  document.getElementById('unit-kg').onclick = () => proceed('kg');
 }
 
 /* الخطوة 2: تختار التمرين بنفسك أو تخلي التطبيق يقترحه لك */
@@ -2002,7 +2053,7 @@ function renderTodayModeChoice(main, feelingKey){
         </div>
       </button>
     </div>
-    <button class="btn btn-ghost mt-16" onclick="renderTodayFeelingStep(document.getElementById('main-content'))">→ رجوع</button>
+    <button class="btn btn-ghost mt-16" onclick="renderTodayUnitStep(document.getElementById('main-content'), '${feelingKey}')">→ رجوع</button>
   `;
 
   document.getElementById('mode-suggest').onclick = () => {
@@ -2209,19 +2260,19 @@ pageRenderers.dashboard = async function(main){
       <div class="stat-grid">
         <div class="stat-box"><div class="stat-label">أيام تمرين</div><div class="stat-value">${workoutDaysThisWeek}</div></div>
         <div class="stat-box"><div class="stat-label">أيام راحة</div><div class="stat-value">${restDaysThisWeek}</div></div>
-        <div class="stat-box"><div class="stat-label">حجم التدريب</div><div class="stat-value">${kgToLb(weekVolume)} <span class="unit">lb</span></div></div>
+        <div class="stat-box"><div class="stat-label">حجم التدريب</div><div class="stat-value">${Math.round(weekVolume)} <span class="unit">kg</span></div></div>
         <div class="stat-box"><div class="stat-label">Streak</div><div class="stat-value">${state.scheduleState?.current_streak || 0}</div></div>
       </div>
 
       <div class="section-title">الوزن</div>
       <div class="stat-grid">
-        <div class="stat-box"><div class="stat-label">الوزن الحالي</div><div class="stat-value">${currentWeight ? kgToLb(currentWeight)+' <span class="unit">lb</span>' : '—'}</div></div>
-        <div class="stat-box"><div class="stat-label">التغير الأخير</div><div class="stat-value">${weightChange!=null ? (weightChange>0?'+':'')+kgToLb(weightChange)+' <span class="unit">lb</span>' : '—'}</div></div>
+        <div class="stat-box"><div class="stat-label">الوزن الحالي</div><div class="stat-value">${currentWeight ? currentWeight+' <span class="unit">kg</span>' : '—'}</div></div>
+        <div class="stat-box"><div class="stat-label">التغير الأخير</div><div class="stat-value">${weightChange!=null ? (weightChange>0?'+':'')+weightChange+' <span class="unit">kg</span>' : '—'}</div></div>
       </div>
 
       <div class="section-title">هذا الشهر</div>
       <div class="card">
-        <div class="list-row"><div class="title">إجمالي حجم التدريب</div><div>${kgToLb(monthVolume)} lb</div></div>
+        <div class="list-row"><div class="title">إجمالي حجم التدريب</div><div>${Math.round(monthVolume)} kg</div></div>
         <div class="list-row"><div class="title">نسبة الالتزام بالجدول</div><div>${adherence}%</div></div>
       </div>
 
@@ -2239,7 +2290,7 @@ pageRenderers.dashboard = async function(main){
         ${(recentPRs && recentPRs.length>0) ? recentPRs.map(pr => `
           <div class="list-row">
             <div><div class="title">${escapeHtml(pr.exercises?.name_ar || '')}</div><div class="sub">${PR_LABELS_AR[pr.record_type]}</div></div>
-            <span class="badge badge-teal">${pr.record_type==='max_weight'||pr.record_type==='estimated_1rm' ? kgToLb(pr.value)+' lb' : pr.value}</span>
+            <span class="badge badge-teal">${pr.record_type==='max_weight'||pr.record_type==='estimated_1rm' ? Math.round(pr.value*10)/10+' kg' : pr.value}</span>
           </div>`).join('') : `<div class="empty-state"><div class="empty-sub">لا توجد أرقام قياسية بعد</div></div>`}
       </div>
     `;
@@ -2581,13 +2632,18 @@ pageRenderers.history = async function(main){
         <span>${s.total_sets} مجموعة</span>
         <span>${kgToLb(s.total_volume_kg||0)} lb حجم</span>
       </div>
+      <button class="btn btn-ghost btn-sm mt-8" onclick="event.stopPropagation(); shareHistorySession('${s.id}')">مشاركة تمريني</button>
     </div>`).join('');
 };
 
 async function openSessionDetail(sessionId){
   const main = document.getElementById('main-content');
   main.innerHTML = '<div class="text-center mt-20"><div class="loading-spinner"></div></div>';
+  await renderSessionDetailContent(sessionId);
+}
 
+async function renderSessionDetailContent(sessionId){
+  const main = document.getElementById('main-content');
   const { data: session } = await sb.from('workout_sessions').select('*').eq('id', sessionId).single();
   const { data: exercises } = await sb.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId).order('sort_order');
 
@@ -2598,20 +2654,137 @@ async function openSessionDetail(sessionId){
       <h2>${escapeHtml(session.day_name_ar)}</h2>
       <div class="sub">${formatDuration(session.duration_seconds)} — ${session.total_sets} مجموعة — ${kgToLb(session.total_volume_kg||0)} lb</div>
     </div>
+    <button class="btn btn-secondary mt-12" onclick="shareHistorySession('${sessionId}')">مشاركة تمريني</button>
     ${(exercises||[]).map(ex => `
       <div class="card mt-12">
-        <div class="title font-bold">${escapeHtml(ex.exercise_name_ar)}</div>
-        <div class="sub mono" style="font-size:11px">${escapeHtml(ex.exercise_name_en)}</div>
+        <div class="flex justify-between items-center">
+          <div>
+            <div class="title font-bold">${escapeHtml(ex.exercise_name_ar)}</div>
+            <div class="sub mono" style="font-size:11px">${escapeHtml(ex.exercise_name_en)}</div>
+          </div>
+          <button class="icon-btn-sm" onclick="deleteHistoryExercise('${sessionId}','${ex.id}')" title="حذف هذا التمرين من الجلسة">✕</button>
+        </div>
         <div class="divider"></div>
         ${(ex.workout_sets||[]).sort((a,b)=>a.set_number-b.set_number).map(s => `
           <div class="list-row">
             <div>${s.is_warmup?'إحماء':'Set '+s.set_number}</div>
-            <div>${kgToLb(s.weight_kg)} lb × ${s.reps}${s.rir!=null?` (RIR ${s.rir})`:''}</div>
+            <div class="flex items-center gap-8">
+              <span>${kgToLb(s.weight_kg)} lb × ${s.reps}${s.rir!=null?` (RIR ${s.rir})`:''}</span>
+              <button class="icon-btn-sm" onclick="editHistorySet('${sessionId}','${s.id}',${s.weight_kg},${s.reps})">✎</button>
+              <button class="icon-btn-sm" onclick="deleteHistorySet('${sessionId}','${s.id}')">✕</button>
+            </div>
           </div>`).join('')}
         ${ex.notes ? `<div class="text-sm text-faint mt-8">${escapeHtml(ex.notes)}</div>` : ''}
       </div>`).join('')}
     ${session.session_notes ? `<div class="card mt-12"><div class="text-sm">${escapeHtml(session.session_notes)}</div></div>` : ''}
   `;
+}
+
+/* إعادة احتساب إجمالي المجموعات وحجم التدريب لجلسة بعد أي تعديل أو حذف */
+async function recomputeSessionAggregates(sessionId){
+  const { data: exercises } = await sb.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId);
+  let totalVolume = 0, totalSets = 0;
+  (exercises || []).forEach(ex => {
+    (ex.workout_sets || []).forEach(s => {
+      if(!s.is_warmup && s.weight_kg && s.reps){
+        totalVolume += s.weight_kg * s.reps;
+        totalSets++;
+      }
+    });
+  });
+  totalVolume = Math.round(totalVolume * 100) / 100;
+  await sb.from('workout_sessions').update({ total_volume_kg: totalVolume, total_sets: totalSets }).eq('id', sessionId);
+  return { totalVolume, totalSets };
+}
+
+async function deleteHistorySet(sessionId, setId){
+  if(!confirm('هل تريد حذف هذه المجموعة؟')) return;
+  try{
+    const { error } = await sb.from('workout_sets').delete().eq('id', setId);
+    if(error) throw error;
+    await recomputeSessionAggregates(sessionId);
+    await renderSessionDetailContent(sessionId);
+    showToast('تم الحذف', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الحذف: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+function editHistorySet(sessionId, setId, currentWeightKg, currentReps){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay centered';
+  overlay.id = 'edit-set-modal';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <button class="modal-close" onclick="closeModal('edit-set-modal')">✕</button>
+      <div class="modal-title">تعديل المجموعة</div>
+      <div class="input-group"><label>الوزن (lb)</label><input type="number" step="0.5" id="edit-set-weight" value="${kgToLb(currentWeightKg)}"></div>
+      <div class="input-group"><label>التكرارات</label><input type="number" id="edit-set-reps" value="${currentReps}"></div>
+      <button class="btn btn-primary" onclick="submitEditHistorySet('${sessionId}','${setId}')">حفظ</button>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function submitEditHistorySet(sessionId, setId){
+  const lb = parseFloat(document.getElementById('edit-set-weight').value);
+  const reps = parseInt(document.getElementById('edit-set-reps').value);
+  if(!lb || !reps){ showToast('أدخل قيم صحيحة', 'error'); return; }
+
+  try{
+    const { error } = await sb.from('workout_sets').update({ weight_kg: lbToKg(lb), reps }).eq('id', setId);
+    if(error) throw error;
+    await recomputeSessionAggregates(sessionId);
+    closeModal('edit-set-modal');
+    await renderSessionDetailContent(sessionId);
+    showToast('تم التعديل', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر التعديل: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+async function deleteHistoryExercise(sessionId, workoutExerciseId){
+  if(!confirm('هل تريد حذف هذا التمرين بالكامل من الجلسة؟ سيُحذف مع كل مجموعاته.')) return;
+  try{
+    const { error } = await sb.from('workout_exercises').delete().eq('id', workoutExerciseId);
+    if(error) throw error;
+    await recomputeSessionAggregates(sessionId);
+    await renderSessionDetailContent(sessionId);
+    showToast('تم الحذف', 'success');
+  }catch(err){
+    console.error(err);
+    showToast('تعذر الحذف: ' + (err.message || 'خطأ غير معروف'), 'error');
+  }
+}
+
+/* مشاركة تمرين محفوظ سابقًا من السجل */
+async function shareHistorySession(sessionId){
+  try{
+    const { data: session } = await sb.from('workout_sessions').select('*').eq('id', sessionId).single();
+    const { data: exercises } = await sb.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId).order('sort_order');
+
+    const exerciseBreakdown = (exercises || []).map(ex => {
+      const workingSets = (ex.workout_sets || []).filter(s => !s.is_warmup && s.weight_kg && s.reps);
+      if(workingSets.length === 0) return null;
+      const maxSet = workingSets.reduce((max,s)=> (s.weight_kg>max.weight_kg?s:max), workingSets[0]);
+      return { name_ar: ex.exercise_name_ar, setsCount: workingSets.length, topWeightLb: kgToLb(maxSet.weight_kg||0), topReps: maxSet.reps||0 };
+    }).filter(Boolean);
+
+    const summary = {
+      dayNameAr: session.day_name_ar,
+      durationSeconds: session.duration_seconds,
+      totalVolume: session.total_volume_kg || 0,
+      setsCount: session.total_sets || 0,
+      endedAt: session.ended_at || session.started_at,
+      exerciseBreakdown,
+    };
+
+    await shareWorkoutSummaryImage(summary);
+  }catch(err){
+    console.error(err);
+    showToast('تعذر تجهيز صورة المشاركة', 'error');
+  }
 }
 
 /* ============================================================
