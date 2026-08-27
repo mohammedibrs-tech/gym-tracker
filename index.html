@@ -578,7 +578,7 @@ textarea{resize:vertical; min-height:70px;}
     <button class="nav-item" data-page="dashboard" onclick="navigateTo('dashboard')">
       <span class="nav-dot">⌂</span><span>الرئيسية</span>
     </button>
-    <button class="nav-item" data-page="today" onclick="navigateTo('today')">
+    <button class="nav-item" data-page="today" onclick="handleStartWorkoutClick()">
       <span class="nav-dot">◉</span><span>تمرين اليوم</span>
     </button>
     <button class="nav-item" data-page="schedule" onclick="navigateTo('schedule')">
@@ -2323,6 +2323,25 @@ function buildShareCardElement(summary){
 /* ============================================================
    الجزء 11: صفحة "تمرين اليوم"
    ============================================================ */
+
+/* مدخل موحّد لبدء التمرين — يكتشف أي جلسة عالقة من قبل ويسأل بوضوح بدل ما يدخلها بصمت */
+function handleStartWorkoutClick(){
+  if(state.activeSession && state.activeSession.status === 'in_progress'){
+    const resume = confirm(
+      `عندك جلسة تمرين سابقة لم تُنهِها بعد: "${state.activeSession.dayNameAr}".\n\n` +
+      `اضغط "موافق" لإكمالها، أو "إلغاء" لتجاهلها وبدء تمرين جديد من الصفر.`
+    );
+    if(resume){
+      navigateTo('today');
+      return;
+    }
+    // تجاهل الجلسة العالقة بدون احتسابها — تبقى مسجّلة بحالة "in_progress" بقاعدة البيانات كأثر تاريخي فقط
+    state.activeSession = null;
+    clearActiveSessionLocally();
+  }
+  navigateTo('today');
+}
+
 pageRenderers.today = function(main){
   if(state.activeSession && state.activeSession.status === 'in_progress'){
     renderLiveWorkoutScreen();
@@ -2671,7 +2690,7 @@ function renderDashboardCheckinArea(nextDay){
         <div class="eyebrow">تمرين اليوم</div>
         <h2>${nextDay ? escapeHtml(nextDay.name_ar) : '—'}</h2>
         <div class="sub">${nextDay ? escapeHtml(nextDay.name_en) : ''}</div>
-        <button class="btn btn-primary" onclick="navigateTo('today')">ابدأ التمرين</button>
+        <button class="btn btn-primary" onclick="handleStartWorkoutClick()">ابدأ التمرين</button>
       </div>
       <button class="btn btn-ghost mt-8" onclick="resetTodayCheckin()">تغيير حالة اليوم</button>
     `;
