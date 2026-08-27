@@ -370,6 +370,15 @@ textarea{resize:vertical; min-height:70px;}
 .set-extra-fields .input-group{flex:1; margin-bottom:0;}
 .set-extra-fields label{font-size:11px;}
 
+/* مقارنة الأداء السابق مباشرة أعلى كل مجموعة */
+.set-compare-row{
+  font-size:11.5px; color:var(--ink-soft); padding:2px 4px 4px; text-align:center;
+}
+.compare-delta{font-weight:700;}
+.compare-delta.up{color:var(--green);}
+.compare-delta.down{color:var(--red);}
+.compare-delta.neutral{color:var(--ink-faint); font-weight:500;}
+
 .rpe-rir-row{display:flex; gap:8px; margin-bottom:10px;}
 .rpe-rir-row .input-group{flex:1; margin-bottom:0;}
 .rpe-rir-row label{font-size:11.5px;}
@@ -1071,14 +1080,24 @@ function calculateProgressiveSuggestion(lastSets, repRangeStr){
   const strugglingReps = lastSets.some(s => s.reps < (repMax - 4)); // فشل واضح دون الحد الأدنى المعقول
   const veryLowRir = lastRir != null && lastRir <= 0;
 
+  // متوسط RPE عبر المجموعات (إن وُجد) — جهد مرتفع جدًا يعني عدم وجود مجال آمن لزيادة الوزن
+  const rpeValues = lastSets.map(s => s.rpe).filter(v => v != null);
+  const avgRpe = rpeValues.length > 0 ? rpeValues.reduce((a,b)=>a+b,0) / rpeValues.length : null;
+  const veryHighRpe = avgRpe != null && avgRpe >= 9.5;
+  const maxedOutEffort = veryLowRir || veryHighRpe;
+
   let suggestedWeight = heaviestSet.weight_kg;
   let note = 'حافظ على نفس الوزن — التركيز على تحسين الأداء أولًا.';
 
-  if(hitTopOfRange && !veryLowRir === false && !strugglingReps){
-    // أداء ممتاز: حقق الحد الأعلى من النطاق
+  if(hitTopOfRange && !strugglingReps && !maxedOutEffort){
+    // أداء ممتاز مع وجود مجال جهد متبقٍ (RIR/RPE يسمحان بزيادة آمنة)
     const increment = heaviestSet.weight_kg >= 40 ? 2.5 : 1.25; // زيادة محافظة بالكيلو
     suggestedWeight = Math.round((heaviestSet.weight_kg + increment) * 4) / 4;
-    note = 'حققت الحد الأعلى من التكرارات المستهدفة. اقتراح زيادة تدريجية وآمنة.';
+    note = 'حققت الحد الأعلى من التكرارات المستهدفة بجهد متحكم فيه. اقتراح زيادة تدريجية وآمنة.';
+  }else if(hitTopOfRange && maxedOutEffort){
+    // حقق الحد الأعلى لكن ببذل أقصى جهد (RIR=0 أو RPE مرتفع جدًا) — لا نقفز بالوزن رغم التكرارات الجيدة
+    suggestedWeight = heaviestSet.weight_kg;
+    note = 'حققت التكرارات المطلوبة لكن بجهد قصوى (RIR منخفض جدًا). حافظ على نفس الوزن حتى يصبح الأداء أسهل.';
   }else if(strugglingReps){
     suggestedWeight = heaviestSet.weight_kg;
     note = 'التكرارات كانت أقل من المطلوب في المرة الماضية. لا داعي لرفع الوزن الآن.';
@@ -1345,6 +1364,7 @@ async function startWorkoutSession(workoutDay, feelingState, options={}){
       currentExerciseIndex: 0,
       isCustomSession: !!options.isCustom,
       allowedMuscleGroups: options.allowedMuscleGroups || null,
+      achievedPRsThisSession: [], // نتتبع الأرقام القياسية الجديدة أثناء الجلسة لعرضها بصورة المشاركة
     };
 
     saveActiveSessionLocally();
@@ -1472,7 +1492,28 @@ function renderExerciseCardHTML(item, idx){
     ? `<div class="suggested-box">الوزن المقترح اليوم: ${unit==='kg' ? item.suggestion.weight_kg+' kg' : item.suggestion.weight_lb+' lb'} — ${escapeHtml(item.suggestion.note)}</div>`
     : '';
 
-  const setsRows = item.sets.map((s, sidx) => `
+  const setsRows = item.sets.map((s, sidx) => {
+    // نبحث عن المجموعة المقابلة بنفس الرقم من الأداء السابق لعرض مقارنة مباشرة لكل Set
+    const matchedLast = (item.lastPerformance && !s.is_warmup)
+      ? item.lastPerformance.sets.find(ls => ls.set_number === s.set_number)
+      : null;
+
+    let compareHtml = '';
+    if(matchedLast){
+      const lastDisplay = weightKgForDisplay(matchedLast.weight_kg);
+      let deltaHtml = '<span class="compare-delta neutral">أدخل الوزن للمقارنة</span>';
+      if(s.weight_kg != null){
+        const todayDisplay = weightKgForDisplay(s.weight_kg);
+        const diff = Math.round((todayDisplay - lastDisplay) * 10) / 10;
+        if(diff > 0) deltaHtml = `<span class="compare-delta up">▲ +${diff} ${unit}</span>`;
+        else if(diff < 0) deltaHtml = `<span class="compare-delta down">▼ ${diff} ${unit}</span>`;
+        else deltaHtml = `<span class="compare-delta neutral">= نفس الوزن</span>`;
+      }
+      compareHtml = `<div class="set-compare-row">السابق: ${lastDisplay} ${unit} × ${matchedLast.reps} &nbsp;—&nbsp; ${deltaHtml}</div>`;
+    }
+
+    return `
+    ${compareHtml}
     <div class="set-row-card ${s.is_warmup?'warmup':''} ${s.checked?'checked':''}">
       <div class="set-row-label">${s.is_warmup ? 'إحماء' : 'Set ' + s.set_number}</div>
       <div class="set-stepper-group">
@@ -1502,7 +1543,8 @@ function renderExerciseCardHTML(item, idx){
       <div class="input-group"><label>RPE (1-10)</label><input type="number" step="0.5" min="1" max="10" value="${s.rpe ?? ''}" onchange="updateSetField(${idx},${sidx},'rpe',this.value)"></div>
       <div class="input-group"><label>RIR (0-5)</label><input type="number" min="0" max="5" value="${s.rir ?? ''}" onchange="updateSetField(${idx},${sidx},'rir',this.value)"></div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   return `
     <div class="exercise-card ${item.completed?'done':''}" id="ex-card-${idx}">
@@ -1675,6 +1717,15 @@ async function persistSet(exIdx, setIdx){
       const prs = await checkAndRecordPRs(item.exercise.id, set);
       if(prs.length > 0){
         showToast(`رقم شخصي جديد: ${prs.map(p=>PR_LABELS_AR[p]).join('، ')}`, 'success');
+        // نسجّل أعلى وزن كرقم قياسي بارز لعرضه لاحقًا في صورة المشاركة
+        if(prs.includes('max_weight') && state.activeSession){
+          state.activeSession.achievedPRsThisSession.push({
+            exercise_name_ar: item.exercise.name_ar,
+            exercise_name_en: item.exercise.name_en,
+            weight_kg: set.weight_kg,
+            reps: set.reps,
+          });
+        }
       }
     }
   }catch(err){
@@ -1710,6 +1761,47 @@ async function confirmFinishWorkout(){
   await finishWorkoutSession();
 }
 
+/* مقارنة إجمالية مع آخر جلسة سابقة لنفس اليوم/التمرين (للاستخدام في بطاقة المشاركة فقط) */
+async function getPreviousSessionComparison(currentSessionRow, currentMaxWeightKg){
+  try{
+    let query = sb.from('workout_sessions').select('*')
+      .eq('user_id', state.user.id).eq('status','completed')
+      .lt('started_at', currentSessionRow.started_at)
+      .order('started_at', { ascending:false }).limit(1);
+
+    if(currentSessionRow.workout_day_id){
+      query = query.eq('workout_day_id', currentSessionRow.workout_day_id);
+    }else{
+      query = query.eq('day_name_ar', currentSessionRow.day_name_ar);
+    }
+
+    const { data } = await query;
+    const prev = data && data[0];
+    if(!prev) return null;
+
+    const volumeDeltaPct = (prev.total_volume_kg && prev.total_volume_kg > 0)
+      ? Math.round(((currentSessionRow.total_volume_kg - prev.total_volume_kg) / prev.total_volume_kg) * 1000) / 10
+      : null;
+    const setsDelta = currentSessionRow.total_sets - (prev.total_sets || 0);
+
+    let weightDeltaKg = null;
+    if(currentMaxWeightKg != null){
+      const { data: prevExercises } = await sb.from('workout_exercises').select('workout_sets(weight_kg,is_warmup)').eq('session_id', prev.id);
+      let prevMaxWeight = 0;
+      (prevExercises||[]).forEach(ex => (ex.workout_sets||[]).forEach(s => {
+        if(!s.is_warmup && s.weight_kg > prevMaxWeight) prevMaxWeight = s.weight_kg;
+      }));
+      if(prevMaxWeight > 0) weightDeltaKg = Math.round((currentMaxWeightKg - prevMaxWeight) * 10) / 10;
+    }
+
+    if(volumeDeltaPct == null && setsDelta === 0 && weightDeltaKg == null) return null;
+    return { volumeDeltaPct, setsDelta, weightDeltaKg };
+  }catch(err){
+    console.error(err);
+    return null;
+  }
+}
+
 async function finishWorkoutSession(){
   const session = state.activeSession;
   const endedAt = nowRiyadhISO();
@@ -1717,6 +1809,7 @@ async function finishWorkoutSession(){
 
   let totalVolume = 0;
   let totalSetsCount = 0;
+  let maxWeightKgOverall = 0;
   const musclesTrained = new Set();
 
   session.exercises.forEach(item => {
@@ -1724,6 +1817,7 @@ async function finishWorkoutSession(){
       if(s.checked && !s.is_warmup && s.weight_kg && s.reps){
         totalVolume += s.weight_kg * s.reps;
         totalSetsCount++;
+        if(s.weight_kg > maxWeightKgOverall) maxWeightKgOverall = s.weight_kg;
       }
     });
     if(item.sets.some(s=>s.checked)) musclesTrained.add(item.exercise.primary_muscle);
@@ -1756,13 +1850,24 @@ async function finishWorkoutSession(){
         return { name_ar: e.exercise.name_ar, name_en: e.exercise.name_en, setsCount: workingSets.length, topWeightLb: kgToLb(maxSet.weight_kg||0), topReps: maxSet.reps||0 };
       });
 
+    const comparison = await getPreviousSessionComparison({
+      workout_day_id: session.workoutDayId,
+      day_name_ar: session.dayNameAr,
+      started_at: session.startedAt,
+      total_volume_kg: Math.round(totalVolume*100)/100,
+      total_sets: totalSetsCount,
+    }, maxWeightKgOverall || null);
+
     const summary = {
       dayNameAr: session.dayNameAr,
+      dayNameEn: session.dayNameEn,
       durationSeconds, totalVolume: Math.round(totalVolume*100)/100,
       exerciseCount: session.exercises.filter(e=>e.sets.some(s=>s.checked)).length,
       setsCount: totalSetsCount,
       endedAt,
       exerciseBreakdown,
+      personalRecords: session.achievedPRsThisSession || [],
+      comparison,
     };
 
     state.activeSession = null;
@@ -1879,7 +1984,7 @@ async function shareWorkoutSummaryImage(summary){
 
     // نصدّر بمقاس ستوري سناب شات/انستقرام القياسي 1080×1920 (نسبة 9:16)
     // البطاقة مبنية بحجم 360×640 ونستخدم scale:3 للوصول لـ 1080×1920 فعليًا
-    const canvas = await window.html2canvas(card, { scale: 3, backgroundColor: '#1C2422', width: 360, height: 640 });
+    const canvas = await window.html2canvas(card, { scale: 3, backgroundColor: '#FFFFFF', width: 360, height: 640 });
     document.body.removeChild(card);
 
     canvas.toBlob(async (blob) => {
@@ -1916,67 +2021,132 @@ function formatDurationCompact(seconds){
   return `${m}د`;
 }
 
+function formatDurationEnglishCompact(seconds){
+  if(!seconds) return '—';
+  const h = Math.floor(seconds/3600);
+  const m = Math.floor((seconds%3600)/60);
+  if(h > 0) return `${h}h ${String(m).padStart(2,'0')}m`;
+  return `${m}m`;
+}
+
+function formatDateEnglishShort(dateStr){
+  const d = new Date(dateStr);
+  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 function buildShareCardElement(summary){
   const MAX_ROWS = 6;
   const breakdown = summary.exerciseBreakdown || [];
   const visibleRows = breakdown.slice(0, MAX_ROWS);
   const extraCount = breakdown.length - visibleRows.length;
+  const personalRecords = summary.personalRecords || [];
+  const comparison = summary.comparison;
+  const fontStack = "Calibri, 'Aptos', Arial, sans-serif";
+  const userName = (state.profile?.display_name || 'ATHLETE').toUpperCase();
+  const muscleLabel = (summary.dayNameEn || summary.dayNameAr || '').toUpperCase();
 
   const card = document.createElement('div');
   card.style.cssText = `
     position:fixed; top:-9999px; left:-9999px;
     width:360px; height:640px;
-    font-family:${getComputedStyle(document.body).fontFamily};
-    direction:rtl; overflow:hidden;
-    background:linear-gradient(165deg, #2E9896 0%, #1C2422 65%);
-    display:flex; flex-direction:column; justify-content:space-between;
-    padding:26px 22px; box-sizing:border-box; color:#fff;
+    font-family:${fontStack};
+    direction:ltr; overflow:hidden;
+    background:#FFFFFF;
+    display:flex; flex-direction:column;
+    padding:30px 26px; box-sizing:border-box; color:#1C2422;
   `;
 
-  card.innerHTML = `
-    <div>
-      <div style="display:flex; align-items:center; gap:8px; margin-bottom:18px;">
-        <div style="width:30px; height:30px; border-radius:9px; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700;">GT</div>
-        <div style="font-size:12px; font-weight:600; opacity:0.85;">متابعة التمارين</div>
-      </div>
-      <div style="font-size:11.5px; opacity:0.8; font-weight:600; letter-spacing:0.04em;">تمرين مكتمل</div>
-      <div style="font-size:25px; font-weight:700; margin:6px 0 3px; line-height:1.25;">${escapeHtml(summary.dayNameAr)}</div>
-      <div style="font-size:11.5px; opacity:0.75;">${formatDateAr(summary.endedAt)}</div>
+  // ============ رأس البطاقة: اسم المستخدم + العضلات + التاريخ ============
+  const headerHtml = `
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:14px;">
+      <div style="width:8px; height:8px; border-radius:50%; background:#2E9896;"></div>
+      <div style="font-size:10px; font-weight:700; letter-spacing:0.12em; color:#2E9896;">WORKOUT COMPLETE</div>
     </div>
+    <div style="font-size:15px; font-weight:700; letter-spacing:0.04em; color:#8A9694; margin-bottom:4px;">${escapeHtml(userName)}</div>
+    <div style="font-size:27px; font-weight:700; letter-spacing:0.01em; color:#1C2422; line-height:1.15; margin-bottom:6px;">${escapeHtml(muscleLabel)}</div>
+    <div style="font-size:11.5px; color:#8A9694; font-weight:600; letter-spacing:0.03em;">${formatDateEnglishShort(summary.endedAt)}</div>
+  `;
 
-    <div style="display:flex; gap:8px;">
-      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
-        <div style="font-size:19px; font-weight:700; white-space:nowrap;">${formatDurationCompact(summary.durationSeconds)}</div>
-        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">المدة</div>
+  // ============ صف الإحصائيات الأساسية ============
+  const statsHtml = `
+    <div style="display:flex; margin:22px 0; border-top:1px solid #EEEEE9; border-bottom:1px solid #EEEEE9; padding:16px 0;">
+      <div style="flex:1; text-align:center; border-right:1px solid #EEEEE9;">
+        <div style="font-size:20px; font-weight:700; white-space:nowrap;">${formatDurationEnglishCompact(summary.durationSeconds)}</div>
+        <div style="font-size:8.5px; font-weight:700; letter-spacing:0.08em; color:#8A9694; margin-top:4px;">DURATION</div>
       </div>
-      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
-        <div style="font-size:19px; font-weight:700;">${summary.setsCount}</div>
-        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">مجموعة</div>
+      <div style="flex:1; text-align:center; border-right:1px solid #EEEEE9;">
+        <div style="font-size:20px; font-weight:700;">${summary.exerciseCount ?? breakdown.length}</div>
+        <div style="font-size:8.5px; font-weight:700; letter-spacing:0.08em; color:#8A9694; margin-top:4px;">EXERCISES</div>
       </div>
-      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
-        <div style="font-size:19px; font-weight:700;">${kgToLb(summary.totalVolume)}</div>
-        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">lb حجم</div>
+      <div style="flex:1; text-align:center; border-right:1px solid #EEEEE9;">
+        <div style="font-size:20px; font-weight:700;">${summary.setsCount}</div>
+        <div style="font-size:8.5px; font-weight:700; letter-spacing:0.08em; color:#8A9694; margin-top:4px;">SETS</div>
+      </div>
+      <div style="flex:1; text-align:center;">
+        <div style="font-size:20px; font-weight:700;">${Math.round(summary.totalVolume)}</div>
+        <div style="font-size:8.5px; font-weight:700; letter-spacing:0.08em; color:#8A9694; margin-top:4px;">VOLUME KG</div>
       </div>
     </div>
+  `;
 
-    <div style="background:#fff; border-radius:16px; padding:16px 14px; color:#1C2422; flex:1; margin:16px 0; display:flex; flex-direction:column; overflow:hidden;">
-      <div style="font-size:10.5px; font-weight:700; color:#8A9694; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:10px;">تفاصيل التمرين</div>
-      <div style="flex:1; display:flex; flex-direction:column; justify-content:${visibleRows.length <= 4 ? 'flex-start' : 'space-between'};">
-        ${visibleRows.map(e => `
-          <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #EEEEE9;">
-            <div style="min-width:0;">
-              <div style="font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:170px;">${escapeHtml(e.name_ar)}</div>
-              <div style="font-size:10px; color:#8A9694;">${e.setsCount} مجموعة</div>
-            </div>
-            <div style="font-size:13.5px; font-weight:700; color:#227876; flex-shrink:0; direction:ltr; unicode-bidi:embed;">${e.topWeightLb} lb × ${e.topReps}</div>
+  // ============ قسم الأرقام القياسية (يظهر فقط إذا وُجد رقم قياسي فعلي) ============
+  const prHtml = personalRecords.length > 0 ? `
+    <div style="margin-bottom:20px;">
+      <div style="font-size:10px; font-weight:700; letter-spacing:0.1em; color:#2E9896; margin-bottom:10px;">PERSONAL RECORDS</div>
+      ${personalRecords.slice(0,3).map(pr => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid #EEEEE9;">
+          <div>
+            <div style="font-size:13.5px; font-weight:700; color:#1C2422;">${escapeHtml(pr.exercise_name_ar)}</div>
+            <div style="font-size:8.5px; font-weight:700; letter-spacing:0.06em; color:#2E9896; margin-top:2px;">NEW PR</div>
           </div>
-        `).join('')}
-        ${extraCount > 0 ? `<div style="font-size:11px; color:#8A9694; text-align:center; padding-top:8px;">+ ${extraCount} تمارين أخرى</div>` : ''}
-      </div>
+          <div style="font-size:15px; font-weight:700; color:#1C2422;">${kgToLb(pr.weight_kg)} lb × ${pr.reps}</div>
+        </div>
+      `).join('')}
     </div>
+  ` : '';
 
-    <div style="text-align:center; font-size:10.5px; opacity:0.7;">متابعة التمارين</div>
+  // ============ قسم مقارنة التقدم مع آخر جلسة مشابهة (يظهر فقط إذا توفرت بيانات حقيقية) ============
+  let comparisonHtml = '';
+  if(comparison){
+    const chips = [];
+    if(comparison.volumeDeltaPct != null){
+      const sign = comparison.volumeDeltaPct > 0 ? '+' : '';
+      chips.push({ label:'VOLUME', value:`${sign}${comparison.volumeDeltaPct}%`, positive: comparison.volumeDeltaPct >= 0 });
+    }
+    if(comparison.weightDeltaKg != null && comparison.weightDeltaKg !== 0){
+      const deltaLb = kgToLb(comparison.weightDeltaKg);
+      const sign = deltaLb > 0 ? '+' : '';
+      chips.push({ label:'WEIGHT', value:`${sign}${deltaLb} lb`, positive: deltaLb >= 0 });
+    }
+    if(comparison.setsDelta != null && comparison.setsDelta !== 0){
+      const sign = comparison.setsDelta > 0 ? '+' : '';
+      chips.push({ label:'SETS', value:`${sign}${comparison.setsDelta}`, positive: comparison.setsDelta >= 0 });
+    }
+
+    if(chips.length > 0){
+      comparisonHtml = `
+        <div>
+          <div style="font-size:10px; font-weight:700; letter-spacing:0.1em; color:#8A9694; margin-bottom:10px;">VS PREVIOUS WORKOUT</div>
+          <div style="display:flex; gap:8px;">
+            ${chips.map(c => `
+              <div style="flex:1; background:#FAFAF8; border-radius:10px; padding:10px 6px; text-align:center;">
+                <div style="font-size:14px; font-weight:700; color:${c.positive ? '#3F7D52' : '#B5453D'};">${c.value}</div>
+                <div style="font-size:8px; font-weight:700; letter-spacing:0.06em; color:#8A9694; margin-top:3px;">${c.label}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  // ============ ذيل البطاقة: اسم التطبيق ============
+  const footerHtml = `
+    <div style="margin-top:auto; padding-top:16px; text-align:center; font-size:9.5px; font-weight:700; letter-spacing:0.1em; color:#C4CAC8;">GYM TRACKER</div>
   `;
+
+  card.innerHTML = headerHtml + statsHtml + prHtml + comparisonHtml + footerHtml;
   return card;
 }
 
@@ -2764,20 +2934,41 @@ async function shareHistorySession(sessionId){
     const { data: session } = await sb.from('workout_sessions').select('*').eq('id', sessionId).single();
     const { data: exercises } = await sb.from('workout_exercises').select('*, workout_sets(*)').eq('session_id', sessionId).order('sort_order');
 
+    let maxWeightKgOverall = 0;
+    const allSetIds = [];
     const exerciseBreakdown = (exercises || []).map(ex => {
       const workingSets = (ex.workout_sets || []).filter(s => !s.is_warmup && s.weight_kg && s.reps);
+      workingSets.forEach(s => { allSetIds.push(s.id); if(s.weight_kg > maxWeightKgOverall) maxWeightKgOverall = s.weight_kg; });
       if(workingSets.length === 0) return null;
       const maxSet = workingSets.reduce((max,s)=> (s.weight_kg>max.weight_kg?s:max), workingSets[0]);
       return { name_ar: ex.exercise_name_ar, setsCount: workingSets.length, topWeightLb: kgToLb(maxSet.weight_kg||0), topReps: maxSet.reps||0 };
     }).filter(Boolean);
 
+    // نستخرج الأرقام القياسية (أعلى وزن) اللي تحققت فعليًا ضمن مجموعات هذه الجلسة تحديدًا
+    let personalRecords = [];
+    if(allSetIds.length > 0){
+      const { data: prRows } = await sb.from('personal_records')
+        .select('*, exercises(name_ar)')
+        .eq('user_id', state.user.id).eq('record_type','max_weight')
+        .in('workout_set_id', allSetIds);
+      personalRecords = (prRows || []).map(pr => ({
+        exercise_name_ar: pr.exercises?.name_ar || '', weight_kg: pr.weight_kg, reps: pr.reps,
+      }));
+    }
+
+    const comparison = await getPreviousSessionComparison(session, maxWeightKgOverall || null);
+
     const summary = {
       dayNameAr: session.day_name_ar,
+      dayNameEn: session.day_name_en,
       durationSeconds: session.duration_seconds,
       totalVolume: session.total_volume_kg || 0,
       setsCount: session.total_sets || 0,
+      exerciseCount: exerciseBreakdown.length,
       endedAt: session.ended_at || session.started_at,
       exerciseBreakdown,
+      personalRecords,
+      comparison,
     };
 
     await shareWorkoutSummaryImage(summary);
@@ -3074,7 +3265,9 @@ function openAddExerciseToSessionModal(){
       <div id="add-ex-list"></div>
     </div>`;
   document.body.appendChild(overlay);
-  renderAddExerciseModalList(getSessionExercisePool());
+  // في وضع "أنا أختار تماريني" (عضلة محددة، بدون بحث)، نعرض القائمة مقسّمة حسب الفئة الفرعية (صدر علوي/أوسط/سفلي...)
+  const shouldGroup = restricted && restricted.length > 0;
+  renderAddExerciseModalList(getSessionExercisePool(), shouldGroup);
 }
 
 /* يرجّع قائمة التمارين المتاحة للإضافة أثناء الجلسة، مقيّدة بالعضلات المختارة إن وُجدت */
@@ -3091,22 +3284,52 @@ function filterAddExerciseModal(query){
   const pool = getSessionExercisePool();
   const filtered = !q ? pool : pool.filter(e =>
     e.name_ar.toLowerCase().includes(q) || e.name_en.toLowerCase().includes(q));
-  renderAddExerciseModalList(filtered);
+  // أثناء البحث النصي نعرض قائمة مسطّحة بسيطة، والتقسيم فقط بالعرض الافتراضي بدون بحث
+  const isRestricted = (state.activeSession?.allowedMuscleGroups?.length || 0) > 0;
+  renderAddExerciseModalList(filtered, !q && isRestricted);
 }
 
-function renderAddExerciseModalList(list){
+/* يجمّع قائمة تمارين ضمن فئاتها الفرعية (مثل صدر علوي/أوسط/سفلي) باستخدام بيانات exercise_categories الحقيقية */
+function groupExercisesByCategory(list){
+  const groups = {};
+  const noCategory = [];
+  list.forEach(e => {
+    if(!e.category_id){ noCategory.push(e); return; }
+    const cat = state.categoryCache.find(c => c.id === e.category_id);
+    if(!cat){ noCategory.push(e); return; }
+    if(!groups[cat.id]) groups[cat.id] = { label: cat.name_ar, sort: cat.sort_order ?? 999, items: [] };
+    groups[cat.id].items.push(e);
+  });
+  const result = Object.values(groups).sort((a,b) => a.sort - b.sort);
+  if(noCategory.length > 0) result.push({ label: 'تمارين أخرى', sort: 999, items: noCategory });
+  return result;
+}
+
+function renderAddExerciseModalList(list, grouped){
   const container = document.getElementById('add-ex-list');
   if(list.length === 0){
     container.innerHTML = `<div class="empty-state"><div class="empty-sub">لا توجد تمارين لهذه العضلة بعد — أضفها من مكتبة التمارين بالإعدادات</div></div>`;
     return;
   }
-  container.innerHTML = list.map(e => `
+
+  const rowHtml = e => `
     <div class="lib-row" style="cursor:pointer" onclick="addExerciseToActiveSession('${e.id}')">
       <div class="lr-info">
         <div class="lr-name">${escapeHtml(e.name_ar)}</div>
         <div class="lr-meta">${escapeHtml(e.name_en)}</div>
       </div>
-    </div>`).join('');
+    </div>`;
+
+  if(grouped){
+    const groups = groupExercisesByCategory(list);
+    container.innerHTML = groups.map(g => `
+      <div class="section-title" style="margin:14px 0 6px; font-size:12px;">${escapeHtml(g.label)}</div>
+      ${g.items.map(rowHtml).join('')}
+    `).join('');
+    return;
+  }
+
+  container.innerHTML = list.map(rowHtml).join('');
 }
 
 async function addExerciseToActiveSession(exerciseId){
