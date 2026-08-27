@@ -1463,7 +1463,8 @@ function renderExerciseCards(listEl){
 
 /* أدوات وحدة الوزن النشطة أثناء الجلسة الحالية (تعتمد على اختيار المستخدم قبل بدء التمرين) */
 function getActiveWeightUnit(){
-  return 'kg'; // المنصة كاملة توحّدت على الكيلوغرام فقط بناءً على طلب المستخدم
+  // خاص بإدخال الأوزان أثناء الجلسة المباشرة فقط — يعتمد على اختيارك قبل بدء كل تمرين
+  return (state.settings?.weight_unit_display === 'kg') ? 'kg' : 'lb';
 }
 function weightKgForDisplay(kg){
   if(kg == null) return '';
@@ -2188,8 +2189,42 @@ pageRenderers.today = function(main){
 function renderTodayFeelingStep(main){
   main.innerHTML = `<div id="feeling-check-area"></div>`;
   renderFeelingScreen(document.getElementById('feeling-check-area'), (feelingKey) => {
-    renderTodayModeChoice(main, feelingKey);
+    renderTodayUnitStep(main, feelingKey);
   });
+}
+
+/* أوزان النادي اليوم بالباوند أو الكيلو؟ — تحدد وحدة الإدخال أثناء تسجيل هذا التمرين تحديدًا */
+function renderTodayUnitStep(main, feelingKey){
+  const currentUnit = (state.settings?.weight_unit_display === 'kg') ? 'kg' : 'lb';
+
+  main.innerHTML = `
+    <div class="section-title" style="margin-top:0">أوزان النادي اليوم؟</div>
+    <div class="text-sm text-faint mb-12">نستخدمها لتسجيل الأوزان أثناء هذا التمرين بنفس وحدتك، وتُحفظ محوّلة تلقائيًا مهما اخترت.</div>
+    <div class="feeling-options">
+      <button class="feeling-opt ${currentUnit==='lb'?'selected':''}" id="unit-lb">
+        <div class="fo-dot">lb</div>
+        <div class="fo-text"><div class="fo-title">بالباوند</div></div>
+      </button>
+      <button class="feeling-opt ${currentUnit==='kg'?'selected':''}" id="unit-kg">
+        <div class="fo-dot">kg</div>
+        <div class="fo-text"><div class="fo-title">بالكيلوغرام</div></div>
+      </button>
+    </div>
+    <button class="btn btn-ghost mt-16" onclick="renderTodayFeelingStep(document.getElementById('main-content'))">→ رجوع</button>
+  `;
+
+  const proceed = async (unit) => {
+    state.settings = { ...(state.settings||{}), weight_unit_display: unit };
+    try{
+      if(state.user?.id){
+        await sb.from('user_settings').update({ weight_unit_display: unit }).eq('user_id', state.user.id);
+      }
+    }catch(e){ console.error(e); }
+    renderTodayModeChoice(main, feelingKey);
+  };
+
+  document.getElementById('unit-lb').onclick = () => proceed('lb');
+  document.getElementById('unit-kg').onclick = () => proceed('kg');
 }
 
 /* الخطوة 2: تختار التمرين بنفسك أو تخلي التطبيق يقترحه لك */
@@ -2212,7 +2247,7 @@ function renderTodayModeChoice(main, feelingKey){
         </div>
       </button>
     </div>
-    <button class="btn btn-ghost mt-16" onclick="renderTodayFeelingStep(document.getElementById('main-content'))">→ رجوع</button>
+    <button class="btn btn-ghost mt-16" onclick="renderTodayUnitStep(document.getElementById('main-content'), '${feelingKey}')">→ رجوع</button>
   `;
 
   document.getElementById('mode-suggest').onclick = () => {
@@ -2852,9 +2887,21 @@ async function recomputeSessionAggregates(sessionId){
   return { totalVolume, totalSets };
 }
 
+/* حذف أي أرقام قياسية مرتبطة بمجموعات محددة قبل حذفها — لأن العلاقة بقاعدة البيانات SET NULL وليست Cascade،
+   فلو ما نظفناها يدويًا، تبقى الأرقام القياسية ظاهرة بلوحة التحكم حتى بعد حذف التمرين الأصلي فعليًا */
+async function cleanupPersonalRecordsForSets(setIds){
+  if(!setIds || setIds.length === 0) return;
+  try{
+    await sb.from('personal_records').delete().in('workout_set_id', setIds);
+  }catch(err){
+    console.error(err);
+  }
+}
+
 async function deleteHistorySet(sessionId, setId){
   if(!confirm('هل تريد حذف هذه المجموعة؟')) return;
   try{
+    await cleanupPersonalRecordsForSets([setId]);
     const { error } = await sb.from('workout_sets').delete().eq('id', setId);
     if(error) throw error;
     await recomputeSessionAggregates(sessionId);
@@ -2902,6 +2949,9 @@ async function submitEditHistorySet(sessionId, setId){
 async function deleteHistoryExercise(sessionId, workoutExerciseId){
   if(!confirm('هل تريد حذف هذا التمرين بالكامل من الجلسة؟ سيُحذف مع كل مجموعاته.')) return;
   try{
+    const { data: sets } = await sb.from('workout_sets').select('id').eq('workout_exercise_id', workoutExerciseId);
+    await cleanupPersonalRecordsForSets((sets||[]).map(s=>s.id));
+
     const { error } = await sb.from('workout_exercises').delete().eq('id', workoutExerciseId);
     if(error) throw error;
     await recomputeSessionAggregates(sessionId);
@@ -2920,6 +2970,11 @@ async function deleteEntireSession(sessionId){
 
   try{
     const { data: session } = await sb.from('workout_sessions').select('*').eq('id', sessionId).single();
+
+    // نجمع كل معرّفات المجموعات بهذي الجلسة وننظف أرقامها القياسية قبل الحذف (العلاقة SET NULL وليست Cascade)
+    const { data: exercises } = await sb.from('workout_exercises').select('id, workout_sets(id)').eq('session_id', sessionId);
+    const allSetIds = (exercises||[]).flatMap(ex => (ex.workout_sets||[]).map(s=>s.id));
+    await cleanupPersonalRecordsForSets(allSetIds);
 
     const { error } = await sb.from('workout_sessions').delete().eq('id', sessionId);
     if(error) throw error;
