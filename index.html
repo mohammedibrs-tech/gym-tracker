@@ -1304,11 +1304,11 @@ function formatTimerMMSS(totalSeconds){
    ============================================================ */
 
 /* إنشاء جلسة تمرين جديدة في Supabase وبدء المؤقت */
-async function startWorkoutSession(workoutDay, feelingState){
+async function startWorkoutSession(workoutDay, feelingState, options={}){
   try{
     const { data: sessionRow, error } = await sb.from('workout_sessions').insert({
       user_id: state.user.id,
-      workout_day_id: workoutDay.id,
+      workout_day_id: workoutDay.id || null,
       day_name_ar: workoutDay.name_ar,
       day_name_en: workoutDay.name_en,
       feeling_state: feelingState,
@@ -1335,7 +1335,7 @@ async function startWorkoutSession(workoutDay, feelingState){
 
     state.activeSession = {
       db_id: sessionRow.id,
-      workoutDayId: workoutDay.id,
+      workoutDayId: workoutDay.id || null,
       dayNameAr: workoutDay.name_ar,
       dayNameEn: workoutDay.name_en,
       feelingState,
@@ -1343,6 +1343,8 @@ async function startWorkoutSession(workoutDay, feelingState){
       status: 'in_progress',
       exercises,
       currentExerciseIndex: 0,
+      isCustomSession: !!options.isCustom,
+      allowedMuscleGroups: options.allowedMuscleGroups || null,
     };
 
     saveActiveSessionLocally();
@@ -1424,10 +1426,19 @@ async function renderLiveWorkoutScreen(){
     await loadExerciseSuggestion(i);
   }
   renderExerciseCards(listEl);
+
+  // جلسة مخصصة بدون تمارين بعد — نفتح قائمة الإضافة تلقائيًا لتسهيل البداية
+  if(session.isCustomSession && session.exercises.length === 0){
+    openAddExerciseToSessionModal();
+  }
 }
 
 function renderExerciseCards(listEl){
   const session = state.activeSession;
+  if(session.exercises.length === 0){
+    listEl.innerHTML = `<div class="empty-state"><div class="empty-title">ما فيه تمارين بالجلسة بعد</div><div class="empty-sub">اضغط "إضافة تمرين لهذه الجلسة" بالأسفل</div></div>`;
+    return;
+  }
   listEl.innerHTML = session.exercises.map((item, idx) => renderExerciseCardHTML(item, idx)).join('');
 }
 
@@ -1483,7 +1494,10 @@ function renderExerciseCardHTML(item, idx){
           <div class="ex-name-ar">${escapeHtml(ex.name_ar)}</div>
           <div class="ex-name-en">${escapeHtml(ex.name_en)}</div>
         </div>
-        <span class="badge badge-teal">${escapeHtml(item.target_rep_range || '')}</span>
+        <div class="flex gap-8 items-center">
+          <span class="badge badge-teal">${escapeHtml(item.target_rep_range || '')}</span>
+          <button class="icon-btn-sm" onclick="removeExerciseFromSession(${idx})" title="إزالة هذا التمرين من الجلسة">✕</button>
+        </div>
       </div>
       ${lastPerfHtml}
       ${suggestionHtml}
@@ -1576,6 +1590,31 @@ async function toggleSetChecked(exIdx, setIdx){
   }else{
     set.checked = false;
   }
+  saveActiveSessionLocally();
+  renderExerciseCards(document.getElementById('live-exercises-list'));
+}
+
+/* إزالة تمرين كامل من الجلسة الجارية — يخلي المستخدم يحدد وش يتمرن عليه بنفسه */
+async function removeExerciseFromSession(exIdx){
+  const item = state.activeSession.exercises[exIdx];
+  if(!item) return;
+
+  const hasCheckedSets = item.sets.some(s => s.checked);
+  const msg = hasCheckedSets
+    ? 'هذا التمرين فيه مجموعات مسجّلة بالفعل. هل تريد حذفه بالكامل من الجلسة؟'
+    : 'هل تريد إزالة هذا التمرين من الجلسة؟';
+  if(!confirm(msg)) return;
+
+  if(item.db_id){
+    try{
+      await sb.from('workout_exercises').delete().eq('id', item.db_id);
+    }catch(err){
+      console.error(err);
+      showToast('تعذر حذف التمرين من الخادم، لكن تمت إزالته من الجلسة الحالية.', 'error');
+    }
+  }
+
+  state.activeSession.exercises.splice(exIdx, 1);
   saveActiveSessionLocally();
   renderExerciseCards(document.getElementById('live-exercises-list'));
 }
@@ -1684,7 +1723,9 @@ async function finishWorkoutSession(){
       session_notes: session.exercises.map(e=>e.notes).filter(Boolean).join(' | ') || null,
     }).eq('id', session.db_id);
 
-    await advanceScheduleAfterCompletion(session.workoutDayId);
+    if(!session.isCustomSession){
+      await advanceScheduleAfterCompletion(session.workoutDayId);
+    }
 
     stopRestTimer();
     if(state.workoutTimerIntervalId) clearInterval(state.workoutTimerIntervalId);
@@ -1819,11 +1860,13 @@ async function shareWorkoutSummaryImage(summary){
     const card = buildShareCardElement(summary);
     document.body.appendChild(card);
 
-    const canvas = await window.html2canvas(card, { scale: 2, backgroundColor: '#FAFAF8' });
+    // نصدّر بمقاس ستوري سناب شات/انستقرام القياسي 1080×1920 (نسبة 9:16)
+    // البطاقة مبنية بحجم 360×640 ونستخدم scale:3 للوصول لـ 1080×1920 فعليًا
+    const canvas = await window.html2canvas(card, { scale: 3, backgroundColor: '#1C2422', width: 360, height: 640 });
     document.body.removeChild(card);
 
     canvas.toBlob(async (blob) => {
-      const file = new File([blob], 'workout-summary.png', { type: 'image/png' });
+      const file = new File([blob], 'workout-story.png', { type: 'image/png' });
 
       if(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })){
         try{
@@ -1837,10 +1880,10 @@ async function shareWorkoutSummaryImage(summary){
       // بديل: تنزيل الصورة مباشرة إذا مشاركة الملفات غير مدعومة بالمتصفح
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'workout-summary.png';
+      a.href = url; a.download = 'workout-story.png';
       a.click();
       URL.revokeObjectURL(url);
-      showToast('تم حفظ الصورة — يمكنك مشاركتها الآن من معرض الصور', 'success');
+      showToast('تم حفظ الصورة بمقاس الستوري — جاهزة للمشاركة بسناب شات أو انستقرام', 'success');
     }, 'image/png');
   }catch(err){
     console.error(err);
@@ -1848,45 +1891,74 @@ async function shareWorkoutSummaryImage(summary){
   }
 }
 
+function formatDurationCompact(seconds){
+  if(!seconds) return '—';
+  const h = Math.floor(seconds/3600);
+  const m = Math.floor((seconds%3600)/60);
+  if(h > 0) return `${h}س ${m}د`;
+  return `${m}د`;
+}
+
 function buildShareCardElement(summary){
+  const MAX_ROWS = 6;
+  const breakdown = summary.exerciseBreakdown || [];
+  const visibleRows = breakdown.slice(0, MAX_ROWS);
+  const extraCount = breakdown.length - visibleRows.length;
+
   const card = document.createElement('div');
-  card.style.cssText = 'position:fixed; top:-9999px; left:-9999px; width:390px; font-family:' + getComputedStyle(document.body).fontFamily + ';';
+  card.style.cssText = `
+    position:fixed; top:-9999px; left:-9999px;
+    width:360px; height:640px;
+    font-family:${getComputedStyle(document.body).fontFamily};
+    direction:rtl; overflow:hidden;
+    background:linear-gradient(165deg, #2E9896 0%, #1C2422 65%);
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:26px 22px; box-sizing:border-box; color:#fff;
+  `;
+
   card.innerHTML = `
-    <div style="background:linear-gradient(160deg, #2E9896 0%, #1C2422 100%); padding:28px 24px; color:#fff; direction:rtl;">
-      <div style="font-size:12px; opacity:0.85; font-weight:600; letter-spacing:0.03em;">تمرين مكتمل</div>
-      <div style="font-size:26px; font-weight:700; margin:8px 0 2px;">${escapeHtml(summary.dayNameAr)}</div>
-      <div style="font-size:12px; opacity:0.8; margin-bottom:20px;">${formatDateAr(summary.endedAt)}</div>
-
-      <div style="display:flex; gap:8px; margin-bottom:20px;">
-        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
-          <div style="font-size:20px; font-weight:700;">${formatDuration(summary.durationSeconds)}</div>
-          <div style="font-size:10px; opacity:0.8; margin-top:2px;">المدة</div>
-        </div>
-        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
-          <div style="font-size:20px; font-weight:700;">${summary.setsCount}</div>
-          <div style="font-size:10px; opacity:0.8; margin-top:2px;">مجموعة</div>
-        </div>
-        <div style="flex:1; background:rgba(255,255,255,0.12); border-radius:10px; padding:12px; text-align:center;">
-          <div style="font-size:20px; font-weight:700;">${kgToLb(summary.totalVolume)}</div>
-          <div style="font-size:10px; opacity:0.8; margin-top:2px;">lb حجم</div>
-        </div>
+    <div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:18px;">
+        <div style="width:30px; height:30px; border-radius:9px; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700;">GT</div>
+        <div style="font-size:12px; font-weight:600; opacity:0.85;">متابعة التمارين</div>
       </div>
+      <div style="font-size:11.5px; opacity:0.8; font-weight:600; letter-spacing:0.04em;">تمرين مكتمل</div>
+      <div style="font-size:25px; font-weight:700; margin:6px 0 3px; line-height:1.25;">${escapeHtml(summary.dayNameAr)}</div>
+      <div style="font-size:11.5px; opacity:0.75;">${formatDateAr(summary.endedAt)}</div>
+    </div>
 
-      <div style="background:#fff; border-radius:14px; padding:16px; color:#1C2422;">
-        <div style="font-size:11px; font-weight:700; color:#8A9694; text-transform:uppercase; margin-bottom:10px;">تفاصيل التمرين</div>
-        ${(summary.exerciseBreakdown||[]).map(e => `
-          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #EEEEE9;">
-            <div>
-              <div style="font-size:13.5px; font-weight:700;">${escapeHtml(e.name_ar)}</div>
-              <div style="font-size:10.5px; color:#8A9694;">${e.setsCount} مجموعة</div>
+    <div style="display:flex; gap:8px;">
+      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
+        <div style="font-size:19px; font-weight:700; white-space:nowrap;">${formatDurationCompact(summary.durationSeconds)}</div>
+        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">المدة</div>
+      </div>
+      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
+        <div style="font-size:19px; font-weight:700;">${summary.setsCount}</div>
+        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">مجموعة</div>
+      </div>
+      <div style="flex:1; background:rgba(255,255,255,0.14); border-radius:14px; padding:14px 6px; text-align:center;">
+        <div style="font-size:19px; font-weight:700;">${kgToLb(summary.totalVolume)}</div>
+        <div style="font-size:9.5px; opacity:0.8; margin-top:3px;">lb حجم</div>
+      </div>
+    </div>
+
+    <div style="background:#fff; border-radius:16px; padding:16px 14px; color:#1C2422; flex:1; margin:16px 0; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="font-size:10.5px; font-weight:700; color:#8A9694; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:10px;">تفاصيل التمرين</div>
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:${visibleRows.length <= 4 ? 'flex-start' : 'space-between'};">
+        ${visibleRows.map(e => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #EEEEE9;">
+            <div style="min-width:0;">
+              <div style="font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:170px;">${escapeHtml(e.name_ar)}</div>
+              <div style="font-size:10px; color:#8A9694;">${e.setsCount} مجموعة</div>
             </div>
-            <div style="font-size:14px; font-weight:700; color:#227876;">${e.topWeightLb} lb × ${e.topReps}</div>
+            <div style="font-size:13.5px; font-weight:700; color:#227876; flex-shrink:0; direction:ltr; unicode-bidi:embed;">${e.topWeightLb} lb × ${e.topReps}</div>
           </div>
         `).join('')}
+        ${extraCount > 0 ? `<div style="font-size:11px; color:#8A9694; text-align:center; padding-top:8px;">+ ${extraCount} تمارين أخرى</div>` : ''}
       </div>
-
-      <div style="text-align:center; margin-top:20px; font-size:11px; opacity:0.7;">متابعة التمارين</div>
     </div>
+
+    <div style="text-align:center; font-size:10.5px; opacity:0.7;">متابعة التمارين</div>
   `;
   return card;
 }
@@ -1899,24 +1971,51 @@ pageRenderers.today = function(main){
     renderLiveWorkoutScreen();
     return;
   }
-
-  const nextDay = getNextWorkoutDay();
-  if(!nextDay){
-    main.innerHTML = `<div class="empty-state"><div class="empty-title">لا يوجد برنامج تمارين بعد</div></div>`;
-    return;
-  }
-
   // الخطوة 1: كيف تشعر اليوم — أول شي يظهر قبل أي شي ثاني
-  renderTodayFeelingStep(main, nextDay);
+  renderTodayFeelingStep(main);
 };
 
-function renderTodayFeelingStep(main, nextDay){
+function renderTodayFeelingStep(main){
   main.innerHTML = `<div id="feeling-check-area"></div>`;
   renderFeelingScreen(document.getElementById('feeling-check-area'), (feelingKey) => {
-    renderTodayPlanStep(main, nextDay, feelingKey);
+    renderTodayModeChoice(main, feelingKey);
   });
 }
 
+/* الخطوة 2: تختار التمرين بنفسك أو تخلي التطبيق يقترحه لك */
+function renderTodayModeChoice(main, feelingKey){
+  main.innerHTML = `
+    <div class="section-title" style="margin-top:0">وش تحب تسوي اليوم؟</div>
+    <div class="feeling-options">
+      <button class="feeling-opt" id="mode-suggest">
+        <div class="fo-dot">◎</div>
+        <div class="fo-text">
+          <div class="fo-title">اقترح لي التمرين</div>
+          <div class="fo-sub">أتبع برنامجي المجدول تلقائيًا</div>
+        </div>
+      </button>
+      <button class="feeling-opt" id="mode-self">
+        <div class="fo-dot">✎</div>
+        <div class="fo-text">
+          <div class="fo-title">أنا أختار تمريني</div>
+          <div class="fo-sub">أحدد العضلات اللي أبي أتمرن عليها اليوم</div>
+        </div>
+      </button>
+    </div>
+    <button class="btn btn-ghost mt-16" onclick="renderTodayFeelingStep(document.getElementById('main-content'))">→ رجوع</button>
+  `;
+
+  document.getElementById('mode-suggest').onclick = () => {
+    const nextDay = getNextWorkoutDay();
+    if(!nextDay){ showToast('لا يوجد برنامج تمارين بعد — أضف يومًا من الإعدادات، أو اختر "أنا أختار"', 'error'); return; }
+    renderTodayPlanStep(main, nextDay, feelingKey);
+  };
+  document.getElementById('mode-self').onclick = () => {
+    renderMuscleGroupPicker(main, feelingKey);
+  };
+}
+
+/* الخطوة 3أ: عرض خطة اليوم المجدولة تلقائيًا */
 function renderTodayPlanStep(main, nextDay, feelingKey){
   main.innerHTML = `
     <div class="hero-card">
@@ -1933,12 +2032,60 @@ function renderTodayPlanStep(main, nextDay, feelingKey){
         </div>`).join('')}
     </div>
     <button class="btn btn-primary mt-20" id="start-workout-btn">ابدأ التمرين</button>
-    <button class="btn btn-ghost mt-8" onclick="renderTodayFeelingStep(document.getElementById('main-content'), getNextWorkoutDay())">→ رجوع</button>
+    <button class="btn btn-ghost mt-8" onclick="renderTodayModeChoice(document.getElementById('main-content'), '${feelingKey}')">→ رجوع</button>
     <button class="btn btn-ghost mt-8" onclick="openEmergencyModal()">حدث ظرف اليوم</button>
   `;
 
   document.getElementById('start-workout-btn').onclick = async () => {
     await startWorkoutSession(nextDay, feelingKey);
+  };
+}
+
+/* الخطوة 3ب: اختيار العضلات لتمرين مخصص بالكامل */
+const MUSCLE_GROUP_OPTIONS = [
+  { key:'chest', label:'صدر' },
+  { key:'back', label:'ظهر' },
+  { key:'shoulders', label:'أكتاف' },
+  { key:'arms', label:'ذراعين (بايسبس / ترايسبس / سواعد)' },
+  { key:'legs', label:'أرجل' },
+];
+
+function renderMuscleGroupPicker(main, feelingKey){
+  const selected = [];
+
+  main.innerHTML = `
+    <div class="section-title" style="margin-top:0">اختر العضلات اللي بتتمرن عليها اليوم</div>
+    <div class="text-sm text-faint mb-12">يمديك تختار أكثر من عضلة، مثلاً صدر + ذراعين</div>
+    <div class="feeling-options" id="muscle-chips"></div>
+    <button class="btn btn-primary mt-20" id="start-custom-btn" disabled>ابدأ التمرين</button>
+    <button class="btn btn-ghost mt-8" id="back-to-mode-btn">→ رجوع</button>
+  `;
+
+  const chipsWrap = document.getElementById('muscle-chips');
+  MUSCLE_GROUP_OPTIONS.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'feeling-opt';
+    btn.innerHTML = `<div class="fo-dot">●</div><div class="fo-text"><div class="fo-title">${escapeHtml(opt.label)}</div></div>`;
+    btn.onclick = () => {
+      const i = selected.indexOf(opt.key);
+      if(i > -1){ selected.splice(i,1); btn.classList.remove('selected'); }
+      else{ selected.push(opt.key); btn.classList.add('selected'); }
+      document.getElementById('start-custom-btn').disabled = selected.length === 0;
+    };
+    chipsWrap.appendChild(btn);
+  });
+
+  document.getElementById('back-to-mode-btn').onclick = () => renderTodayModeChoice(main, feelingKey);
+
+  document.getElementById('start-custom-btn').onclick = async () => {
+    const groupLabels = MUSCLE_GROUP_OPTIONS.filter(o => selected.includes(o.key)).map(o => o.label);
+    const customDay = {
+      id: null,
+      name_ar: groupLabels.join(' + '),
+      name_en: selected.join(' + '),
+      workout_day_exercises: [],
+    };
+    await startWorkoutSession(customDay, feelingKey, { isCustom: true, allowedMuscleGroups: selected });
   };
 }
 
@@ -2741,26 +2888,45 @@ function openAddExerciseToSessionModal(){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'add-ex-session-modal';
+  const restricted = state.activeSession?.allowedMuscleGroups;
+  const hint = restricted && restricted.length > 0
+    ? `<div class="text-sm text-faint mb-12">القائمة مقتصرة على العضلات اللي اخترتها: ${restricted.map(g => MUSCLE_GROUP_OPTIONS.find(o=>o.key===g)?.label || g).join('، ')}</div>`
+    : '';
   overlay.innerHTML = `
     <div class="modal-sheet">
       <button class="modal-close" onclick="closeModal('add-ex-session-modal')">✕</button>
       <div class="modal-title">إضافة تمرين للجلسة</div>
+      ${hint}
       <div class="search-box"><input type="text" id="add-ex-search" placeholder="ابحث..." oninput="filterAddExerciseModal(this.value)"></div>
       <div id="add-ex-list"></div>
     </div>`;
   document.body.appendChild(overlay);
-  renderAddExerciseModalList(state.exerciseCache);
+  renderAddExerciseModalList(getSessionExercisePool());
+}
+
+/* يرجّع قائمة التمارين المتاحة للإضافة أثناء الجلسة، مقيّدة بالعضلات المختارة إن وُجدت */
+function getSessionExercisePool(){
+  const restricted = state.activeSession?.allowedMuscleGroups;
+  if(restricted && restricted.length > 0){
+    return state.exerciseCache.filter(e => restricted.includes(e.primary_muscle));
+  }
+  return state.exerciseCache;
 }
 
 function filterAddExerciseModal(query){
   const q = query.trim().toLowerCase();
-  const filtered = !q ? state.exerciseCache : state.exerciseCache.filter(e =>
+  const pool = getSessionExercisePool();
+  const filtered = !q ? pool : pool.filter(e =>
     e.name_ar.toLowerCase().includes(q) || e.name_en.toLowerCase().includes(q));
   renderAddExerciseModalList(filtered);
 }
 
 function renderAddExerciseModalList(list){
   const container = document.getElementById('add-ex-list');
+  if(list.length === 0){
+    container.innerHTML = `<div class="empty-state"><div class="empty-sub">لا توجد تمارين لهذه العضلة بعد — أضفها من مكتبة التمارين بالإعدادات</div></div>`;
+    return;
+  }
   container.innerHTML = list.map(e => `
     <div class="lib-row" style="cursor:pointer" onclick="addExerciseToActiveSession('${e.id}')">
       <div class="lr-info">
